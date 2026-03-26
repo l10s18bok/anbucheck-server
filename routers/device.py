@@ -52,10 +52,9 @@ async def update_heartbeat_schedule(
     user: dict = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    # 유효한 시간대 확인 (06:00 ~ 21:00)
     h, m = body.heartbeat_hour, body.heartbeat_minute
-    if not (6 <= h <= 21):
-        raise HTTPException(status_code=400, detail="heartbeat 시각은 06:00~21:00 사이여야 합니다")
+    if not (0 <= h <= 23):
+        raise HTTPException(status_code=400, detail="heartbeat 시각은 00:00~23:59 사이여야 합니다")
     if not (0 <= m <= 59):
         raise HTTPException(status_code=400, detail="heartbeat 분은 0~59 사이여야 합니다")
 
