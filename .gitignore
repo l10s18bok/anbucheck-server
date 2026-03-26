@@ -1,0 +1,19 @@
+# 환경변수 (Firebase 키 등 비공개 정보 포함)
+.env
+*.env
+
+# Firebase 서비스 계정 키 파일
+*.json
+!requirements*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# DB 파일
+*.db
+*.db-shm
+*.db-wal
