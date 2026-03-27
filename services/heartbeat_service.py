@@ -16,7 +16,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
 
     # 기기 정보 조회
     device = await db.fetchrow(
-        "SELECT id, suspicious_count, heartbeat_hour, heartbeat_minute FROM devices WHERE user_id = $1 AND device_id = $2",
+        "SELECT id, suspicious_count, heartbeat_hour, heartbeat_minute, last_seen FROM devices WHERE user_id = $1 AND device_id = $2",
         user_id, device_id,
     )
 
@@ -28,6 +28,16 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     suspicious    = payload["suspicious"]
     battery_level = payload.get("battery_level")
     manual        = payload.get("manual", False)
+
+    # 오늘(KST) 이미 heartbeat를 보낸 경우 suspicious 판정 무시
+    # → 하루 첫 번째 heartbeat에서만 센서값 비교
+    if suspicious and not manual:
+        last_seen = device["last_seen"]
+        if last_seen is not None:
+            last_seen_date = last_seen.astimezone(KST).date()
+            today_kst = datetime.now(KST).date()
+            if last_seen_date == today_kst:
+                suspicious = False
 
     # devices 테이블 갱신
     new_suspicious_count = device["suspicious_count"] + 1 if suspicious else 0
