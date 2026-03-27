@@ -1,5 +1,12 @@
+import os
 import asyncpg
-from config import DATABASE_URL
+
+# config.py를 거치지 않고 직접 읽기 (디버깅용)
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+import logging
+logging.basicConfig(level=logging.INFO)
+_logger = logging.getLogger(__name__)
+_logger.info(f"[DB] DATABASE_URL prefix: {DATABASE_URL[:30] if DATABASE_URL else 'EMPTY'}")
 
 _pool: asyncpg.Pool | None = None
 
