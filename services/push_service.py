@@ -141,8 +141,8 @@ async def push_app_closed(fcm_token: str, subject_user_id: int) -> bool:
 async def push_caution(fcm_token: str, subject_user_id: int) -> bool:
     return await send_push(
         fcm_token,
-        title="⚠ 폰 미사용 감지",
-        body="대상자의 폰 사용이 48시간째 감지되지 않습니다. 직접 안부를 확인해 보시기 바랍니다.",
+        title="⚠ 안부 확인 필요",
+        body="오늘 대상자의 생존확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.",
         data={"type": "alert_caution", "subject_user_id": str(subject_user_id)},
     )
 
