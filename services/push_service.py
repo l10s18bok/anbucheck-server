@@ -109,22 +109,22 @@ def _is_token_error(exc: Exception) -> bool:
 
 # 경고 Push 메시지 헬퍼
 
-async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default") -> bool:
+async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
         title="🔋 대상자 폰 배터리 부족",
         body="폰 배터리가 10% 이하입니다. 충전이 필요할 수 있습니다.",
-        data={"type": "alert_info", "reason": "battery_low", "subject_user_id": str(subject_user_id)},
+        data={"type": "alert_info", "reason": "battery_low", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_battery_dead(fcm_token: str, subject_user_id: int, battery_level: int, sound: Optional[str] = "default") -> bool:
+async def push_battery_dead(fcm_token: str, subject_user_id: int, battery_level: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
         title="🔋 배터리 방전 추정",
         body=f"대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 마지막 배터리 잔량: {battery_level}%. 충전 후 자동으로 정상 복귀됩니다.",
-        data={"type": "alert_info", "reason": "battery_dead", "subject_user_id": str(subject_user_id)},
+        data={"type": "alert_info", "reason": "battery_dead", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
@@ -138,58 +138,58 @@ async def push_app_closed(fcm_token: str, subject_user_id: int) -> bool:
     )
 
 
-async def push_caution(fcm_token: str, subject_user_id: int) -> bool:
+async def push_caution(fcm_token: str, subject_user_id: int, invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
         title="⚠ 안부 확인 필요",
         body="오늘 대상자의 생존확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.",
-        data={"type": "alert_caution", "subject_user_id": str(subject_user_id)},
+        data={"type": "alert_caution", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
     )
 
 
-async def push_warning(fcm_token: str, subject_user_id: int) -> bool:
+async def push_warning(fcm_token: str, subject_user_id: int, invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
         title="⚠ 안부 확인",
         body="대상자의 오늘 생존확인이 없습니다. 통신 불가 상태일 수 있습니다.",
-        data={"type": "alert_warning", "subject_user_id": str(subject_user_id)},
+        data={"type": "alert_warning", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
     )
 
 
-async def push_urgent(fcm_token: str, subject_user_id: int) -> bool:
+async def push_urgent(fcm_token: str, subject_user_id: int, invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
         title="🚨 긴급: 대상자 확인 필요",
         body="생존확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.",
-        data={"type": "alert_urgent", "subject_user_id": str(subject_user_id)},
+        data={"type": "alert_urgent", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
     )
 
 
-async def push_urgent_secondary(fcm_token: str, subject_user_id: int) -> bool:
+async def push_urgent_secondary(fcm_token: str, subject_user_id: int, invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
         title="🚨 긴급: 대상자 확인 필요",
         body="대상자의 생존확인이 없으며 다른 보호자도 아직 확인하지 않았습니다. 즉시 확인이 필요합니다.",
-        data={"type": "alert_urgent", "subject_user_id": str(subject_user_id)},
+        data={"type": "alert_urgent", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
     )
 
 
-async def push_resolved(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default") -> bool:
+async def push_resolved(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
         title="✅ 안부 확인",
         body="대상자의 생존확인이 정상 복귀되었습니다.",
-        data={"type": "alert_resolved", "subject_user_id": str(subject_user_id)},
+        data={"type": "alert_resolved", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_manual_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default") -> bool:
+async def push_manual_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
         title="✅ 수동 안부 확인",
         body="대상자께서 직접 안부 확인을 보냈습니다.",
-        data={"type": "manual_report", "subject_user_id": str(subject_user_id)},
+        data={"type": "manual_report", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
@@ -228,12 +228,12 @@ async def push_wellbeing_check(fcm_token: str) -> bool:
     )
 
 
-async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default") -> bool:
+async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
         title="✅ 오늘 생존확인 완료",
         body="대상자의 오늘 생존확인이 정상 수신되었습니다.",
-        data={"type": "auto_report", "subject_user_id": str(subject_user_id)},
+        data={"type": "auto_report", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 

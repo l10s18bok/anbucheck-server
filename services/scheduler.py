@@ -125,6 +125,10 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
         push_battery_dead, push_caution, push_warning, push_urgent
     )
 
+    # 대상자 invite_code 조회
+    invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
+    invite_code = invite_row["invite_code"] if invite_row else None
+
     # 1. 배터리 ≤ 10% → 정보 등급 1회 발송 후 종료 (이후 상향 없음)
     if battery_level <= 10:
         if not await has_active_alert(db, user_id, "info"):
@@ -132,7 +136,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
             for g in guardians:
                 settings = await get_guardian_settings(db, g["guardian_user_id"])
                 if _can_send(settings, "info"):
-                    await push_battery_dead(g["fcm_token"], user_id, battery_level)
+                    await push_battery_dead(g["fcm_token"], user_id, battery_level, invite_code=invite_code)
         return
 
     # 2. 누적 미수신 등급 판정
@@ -144,7 +148,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
 
     if has_urgent:
         # 긴급 지속 — days_inactive 증가 + 반복 발송
-        await _escalate_urgent_if_needed(db, user_id, last_seen_dt, guardians)
+        await _escalate_urgent_if_needed(db, user_id, last_seen_dt, guardians, invite_code)
 
     elif has_warning:
         # 경고 3회 이상 → 긴급 상향
@@ -152,7 +156,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
         for g in guardians:
             settings = await get_guardian_settings(db, g["guardian_user_id"])
             if _can_send(settings, "urgent"):
-                await push_urgent(g["fcm_token"], user_id)
+                await push_urgent(g["fcm_token"], user_id, invite_code=invite_code)
 
     elif has_caution:
         # 2회 미수신 → 경고
@@ -160,7 +164,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
         for g in guardians:
             settings = await get_guardian_settings(db, g["guardian_user_id"])
             if _can_send(settings, "warning"):
-                await push_warning(g["fcm_token"], user_id)
+                await push_warning(g["fcm_token"], user_id, invite_code=invite_code)
 
     else:
         # 1회 미수신 → 주의
@@ -168,7 +172,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
         for g in guardians:
             settings = await get_guardian_settings(db, g["guardian_user_id"])
             if _can_send(settings, "caution"):
-                await push_caution(g["fcm_token"], user_id)
+                await push_caution(g["fcm_token"], user_id, invite_code=invite_code)
 
 
 async def _escalate_urgent_if_needed(
@@ -176,6 +180,7 @@ async def _escalate_urgent_if_needed(
     user_id: int,
     last_seen_dt: datetime,
     guardians: list,
+    invite_code: str | None = None,
 ) -> None:
     """긴급 등급 기존 경고 업데이트 + 2차 보호자 발송"""
     from services.push_service import push_urgent_secondary
@@ -189,7 +194,7 @@ async def _escalate_urgent_if_needed(
     for g in guardians:
         settings = await get_guardian_settings(db, g["guardian_user_id"])
         if _can_send(settings, "urgent"):
-            await push_urgent_secondary(g["fcm_token"], user_id)
+            await push_urgent_secondary(g["fcm_token"], user_id, invite_code=invite_code)
 
 
 # ─────────────────────────────────────────────────────────────

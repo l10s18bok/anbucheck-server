@@ -110,22 +110,9 @@ async def _handle_suspicious(
     if not suspicious:
         return
 
-    if suspicious_count == 1:
-        # 주의 등급 발생 (중복 생성 방지)
-        if not await alert_service.has_active_alert(db, user_id, "caution"):
-            await alert_service.create_alert(db, user_id, "caution", now_dt)
-            await alert_service.send_alert_to_guardians(db, user_id, "caution")
-        return
-
-    if suspicious_count >= 2:
-        # 경고 등급 발생 (warning/urgent 중복 생성 방지)
-        if not await alert_service.has_active_alert(db, user_id, "warning") and \
-           not await alert_service.has_active_alert(db, user_id, "urgent"):
-            await alert_service.create_alert(db, user_id, "warning", now_dt)
-            await alert_service.send_alert_to_guardians(db, user_id, "warning")
-
-        # 보호자 "안부 확인 알림" 설정 확인 후 대상자에게 Push
-        await _send_wellbeing_check_if_enabled(db, user_id, device_id)
+    # suspicious=true: 대상자에게 wellbeing_check만 발송
+    # 보호자 경고는 job_heartbeat_check(미수신 판정)에서만 처리
+    await _send_wellbeing_check_if_enabled(db, user_id, device_id)
 
 
 async def _send_wellbeing_check_if_enabled(
@@ -155,12 +142,16 @@ async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -
         user_id,
     )
 
+    # 대상자 invite_code 조회
+    invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
+    invite_code = invite_row["invite_code"] if invite_row else None
+
     for guardian in guardians:
         settings = await get_guardian_settings(db, guardian["guardian_user_id"])
         if not should_send(settings, "info"):
             continue
         sound = "default" if use_sound(settings, "info") else None
-        await push_service.push_battery_low(guardian["fcm_token"], user_id, sound=sound)
+        await push_service.push_battery_low(guardian["fcm_token"], user_id, sound=sound, invite_code=invite_code)
 
 
 async def _send_auto_report_to_guardians(db: asyncpg.Connection, user_id: int) -> None:
@@ -177,12 +168,16 @@ async def _send_auto_report_to_guardians(db: asyncpg.Connection, user_id: int) -
         user_id,
     )
 
+    # 대상자 invite_code 조회
+    invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
+    invite_code = invite_row["invite_code"] if invite_row else None
+
     for guardian in guardians:
         settings = await get_guardian_settings(db, guardian["guardian_user_id"])
         if not should_send(settings, "info"):
             continue
         sound = "default" if use_sound(settings, "info") else None
-        await push_service.push_auto_report(guardian["fcm_token"], user_id, sound=sound)
+        await push_service.push_auto_report(guardian["fcm_token"], user_id, sound=sound, invite_code=invite_code)
 
 
 async def _send_manual_report_to_guardians(db: asyncpg.Connection, user_id: int) -> None:
@@ -199,9 +194,13 @@ async def _send_manual_report_to_guardians(db: asyncpg.Connection, user_id: int)
         user_id,
     )
 
+    # 대상자 invite_code 조회
+    invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
+    invite_code = invite_row["invite_code"] if invite_row else None
+
     for guardian in guardians:
         settings = await get_guardian_settings(db, guardian["guardian_user_id"])
         if not should_send(settings, "info"):
             continue
         sound = "default" if use_sound(settings, "info") else None
-        await push_service.push_manual_report(guardian["fcm_token"], user_id, sound=sound)
+        await push_service.push_manual_report(guardian["fcm_token"], user_id, sound=sound, invite_code=invite_code)

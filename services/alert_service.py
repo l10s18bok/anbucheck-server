@@ -192,12 +192,16 @@ async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int) ->
         subject_user_id,
     )
 
+    # 대상자 invite_code 조회
+    invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", subject_user_id)
+    invite_code = invite_row["invite_code"] if invite_row else None
+
     for guardian in guardians:
         settings = await get_guardian_settings(db, guardian["guardian_user_id"])
         if not should_send(settings, "info"):
             continue
         sound = "default" if use_sound(settings, "info") else None
-        await push_service.push_resolved(guardian["fcm_token"], subject_user_id, sound=sound)
+        await push_service.push_resolved(guardian["fcm_token"], subject_user_id, sound=sound, invite_code=invite_code)
 
     return resolved_levels
 
@@ -257,15 +261,19 @@ async def send_alert_to_guardians(
         subject_user_id,
     )
 
+    # 대상자 invite_code 조회
+    invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", subject_user_id)
+    invite_code = invite_row["invite_code"] if invite_row else None
+
     for guardian in guardians:
         token = guardian["fcm_token"]
         if alert_level == "info_battery_low":
-            await push_service.push_battery_low(token, subject_user_id)
+            await push_service.push_battery_low(token, subject_user_id, invite_code=invite_code)
         elif alert_level == "info_battery_dead":
-            await push_service.push_battery_dead(token, subject_user_id, battery_level or 0)
+            await push_service.push_battery_dead(token, subject_user_id, battery_level or 0, invite_code=invite_code)
         elif alert_level == "caution":
-            await push_service.push_caution(token, subject_user_id)
+            await push_service.push_caution(token, subject_user_id, invite_code=invite_code)
         elif alert_level == "warning":
-            await push_service.push_warning(token, subject_user_id)
+            await push_service.push_warning(token, subject_user_id, invite_code=invite_code)
         elif alert_level == "urgent":
-            await push_service.push_urgent(token, subject_user_id)
+            await push_service.push_urgent(token, subject_user_id, invite_code=invite_code)
