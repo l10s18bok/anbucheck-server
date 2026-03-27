@@ -1,20 +1,19 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from database import get_db
-import aiosqlite
+import asyncpg
 
 bearer_scheme = HTTPBearer()
 
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict:
     token = credentials.credentials
-    async with db.execute(
-        "SELECT id, role FROM users WHERE device_token = ?", (token,)
-    ) as cursor:
-        row = await cursor.fetchone()
+    row = await db.fetchrow(
+        "SELECT id, role FROM users WHERE device_token = $1", token
+    )
 
     if row is None:
         raise HTTPException(

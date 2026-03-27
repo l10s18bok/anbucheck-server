@@ -1,6 +1,6 @@
 fastapi==0.115.*
 uvicorn==0.34.*
-aiosqlite==0.21.*
+asyncpg==0.30.*
 apscheduler==3.11.*
 firebase-admin==6.6.*
 python-dotenv==1.1.*

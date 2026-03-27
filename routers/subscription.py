@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-import aiosqlite
+import asyncpg
 
 from database import get_db
 from middleware.auth import require_guardian
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/v1/subscription", tags=["subscription"])
 @router.get("", response_model=SubscriptionOut)
 async def get_sub(
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     result = await get_subscription(db, user["user_id"])
     return SubscriptionOut(**result)
@@ -22,7 +22,7 @@ async def get_sub(
 async def verify_sub(
     body: SubscriptionVerifyIn,
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     result = await verify_subscription(db, user["user_id"], body.platform, body.product_id, body.receipt)
     return SubscriptionVerifyOut(**result)
@@ -32,7 +32,7 @@ async def verify_sub(
 async def restore_sub(
     body: SubscriptionVerifyIn,
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     result = await restore_subscription(db, user["user_id"], body.platform, body.product_id, body.receipt)
     return SubscriptionRestoreOut(**result)

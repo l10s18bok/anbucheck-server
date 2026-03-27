@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-import aiosqlite
+import asyncpg
 
 from database import get_db
 from middleware.auth import require_guardian
@@ -11,13 +11,12 @@ router = APIRouter(prefix="/api/v1/guardian/notification-settings", tags=["notif
 @router.get("", response_model=NotificationSettingsOut)
 async def get_settings(
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
-    async with db.execute(
-        "SELECT * FROM guardian_notification_settings WHERE guardian_user_id = ?",
-        (user["user_id"],),
-    ) as cur:
-        row = await cur.fetchone()
+    row = await db.fetchrow(
+        "SELECT * FROM guardian_notification_settings WHERE guardian_user_id = $1",
+        user["user_id"],
+    )
 
     if row is None:
         # 설정 없으면 기본값 반환
@@ -33,12 +32,12 @@ async def get_settings(
         )
 
     return NotificationSettingsOut(
-        all_enabled=bool(row["all_enabled"]),
-        urgent_enabled=bool(row["urgent_enabled"]),
-        warning_enabled=bool(row["warning_enabled"]),
-        caution_enabled=bool(row["caution_enabled"]),
-        info_enabled=bool(row["info_enabled"]),
-        dnd_enabled=bool(row["dnd_enabled"]),
+        all_enabled=row["all_enabled"],
+        urgent_enabled=row["urgent_enabled"],
+        warning_enabled=row["warning_enabled"],
+        caution_enabled=row["caution_enabled"],
+        info_enabled=row["info_enabled"],
+        dnd_enabled=row["dnd_enabled"],
         dnd_start=row["dnd_start"],
         dnd_end=row["dnd_end"],
     )
@@ -48,36 +47,33 @@ async def get_settings(
 async def update_settings(
     body: NotificationSettingsIn,
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     await db.execute(
         """INSERT INTO guardian_notification_settings
                (guardian_user_id, all_enabled, urgent_enabled, warning_enabled,
                 caution_enabled, info_enabled, dnd_enabled, dnd_start, dnd_end, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-           ON CONFLICT(guardian_user_id) DO UPDATE SET
-               all_enabled     = excluded.all_enabled,
-               urgent_enabled  = excluded.urgent_enabled,
-               warning_enabled = excluded.warning_enabled,
-               caution_enabled = excluded.caution_enabled,
-               info_enabled    = excluded.info_enabled,
-               dnd_enabled     = excluded.dnd_enabled,
-               dnd_start       = excluded.dnd_start,
-               dnd_end         = excluded.dnd_end,
-               updated_at      = excluded.updated_at""",
-        (
-            user["user_id"],
-            int(body.all_enabled),
-            int(body.urgent_enabled),
-            int(body.warning_enabled),
-            int(body.caution_enabled),
-            int(body.info_enabled),
-            int(body.dnd_enabled),
-            body.dnd_start,
-            body.dnd_end,
-        ),
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+           ON CONFLICT (guardian_user_id) DO UPDATE SET
+               all_enabled     = EXCLUDED.all_enabled,
+               urgent_enabled  = EXCLUDED.urgent_enabled,
+               warning_enabled = EXCLUDED.warning_enabled,
+               caution_enabled = EXCLUDED.caution_enabled,
+               info_enabled    = EXCLUDED.info_enabled,
+               dnd_enabled     = EXCLUDED.dnd_enabled,
+               dnd_start       = EXCLUDED.dnd_start,
+               dnd_end         = EXCLUDED.dnd_end,
+               updated_at      = EXCLUDED.updated_at""",
+        user["user_id"],
+        body.all_enabled,
+        body.urgent_enabled,
+        body.warning_enabled,
+        body.caution_enabled,
+        body.info_enabled,
+        body.dnd_enabled,
+        body.dnd_start,
+        body.dnd_end,
     )
-    await db.commit()
 
     return NotificationSettingsOut(
         all_enabled=body.all_enabled,

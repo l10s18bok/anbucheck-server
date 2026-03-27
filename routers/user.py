@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-import aiosqlite
+import asyncpg
 
 from database import get_db
 from models.user import UserRegisterIn, UserRegisterOut, SubscriptionOut
@@ -9,7 +9,7 @@ router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
 
 @router.post("", response_model=UserRegisterOut, status_code=201)
-async def register(body: UserRegisterIn, db: aiosqlite.Connection = Depends(get_db)):
+async def register(body: UserRegisterIn, db: asyncpg.Connection = Depends(get_db)):
     if body.role not in ("subject", "guardian"):
         from fastapi import HTTPException, status
         raise HTTPException(status_code=400, detail="role은 'subject' 또는 'guardian'이어야 합니다")

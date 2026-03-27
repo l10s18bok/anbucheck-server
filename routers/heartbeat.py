@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-import aiosqlite
+import asyncpg
 
 from database import get_db
 from middleware.auth import get_current_user
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/v1", tags=["heartbeat"])
 async def heartbeat(
     body: HeartbeatIn,
     user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     result = await process_heartbeat(db, user["user_id"], body.model_dump())
     return HeartbeatOut(**result)

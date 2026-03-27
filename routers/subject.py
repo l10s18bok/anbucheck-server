@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-import aiosqlite
+import asyncpg
 
 from database import get_db
 from middleware.auth import require_guardian
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/v1/subjects", tags=["subjects"])
 async def link(
     body: SubjectLinkIn,
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     result = await link_subject(db, user["user_id"], body.invite_code)
     s = result["subject"]
@@ -34,7 +34,7 @@ async def link(
 @router.get("", response_model=SubjectListOut)
 async def list_subjects(
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     result = await get_subjects(db, user["user_id"])
     subjects = []
@@ -64,7 +64,7 @@ async def list_subjects(
 async def unlink(
     guardian_id: int,
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     await unlink_subject(db, guardian_id, user["user_id"])
     return {"message": "대상자 연결이 해제되었습니다"}

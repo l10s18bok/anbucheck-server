@@ -15,7 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-import aiosqlite
+import asyncpg
 
 from services.alert_service import get_guardian_settings, is_in_dnd, should_send, use_sound
 
@@ -31,19 +31,6 @@ def _can_send(settings: dict, level: str) -> bool:
     return should_send(settings, level) and use_sound(settings, level)
 
 
-async def _get_guardian_settings(db: aiosqlite.Connection, guardian_user_id: int) -> dict:
-    return await get_guardian_settings(db, guardian_user_id)
-
-
-# ─────────────────────────────────────────────────────────────
-# 공통 헬퍼
-# ─────────────────────────────────────────────────────────────
-
-async def _get_db() -> aiosqlite.Connection:
-    from database import get_db
-    return await get_db()
-
-
 # ─────────────────────────────────────────────────────────────
 # 1. Heartbeat 트리거 Silent Push 발송 (매 1분, iOS/Android 공통)
 # ─────────────────────────────────────────────────────────────
@@ -53,32 +40,31 @@ async def job_heartbeat_trigger() -> None:
     current_hour = now_kst.hour
     current_minute = now_kst.minute
 
-    db = await _get_db()
-    async with db.execute(
-        """SELECT d.fcm_token, d.device_id, d.platform
-           FROM devices d
-           JOIN users u ON d.user_id = u.id
-           WHERE u.role = 'subject'
-             AND d.heartbeat_hour = ?
-             AND d.heartbeat_minute = ?
-             AND d.fcm_token IS NOT NULL""",
-        (current_hour, current_minute),
-    ) as cur:
-        devices = await cur.fetchall()
+    from database import get_pool
+    async with get_pool().acquire() as db:
+        devices = await db.fetch(
+            """SELECT d.fcm_token, d.device_id, d.platform
+               FROM devices d
+               JOIN users u ON d.user_id = u.id
+               WHERE u.role = 'subject'
+                 AND d.heartbeat_hour = $1
+                 AND d.heartbeat_minute = $2
+                 AND d.fcm_token IS NOT NULL""",
+            current_hour, current_minute,
+        )
 
-    if not devices:
-        return
+        if not devices:
+            return
 
-    from services.push_service import push_heartbeat_trigger
-    for dev in devices:
-        token_invalid = await push_heartbeat_trigger(dev["fcm_token"], dev["platform"])
-        if token_invalid:
-            await db.execute(
-                "UPDATE devices SET fcm_token = NULL WHERE device_id = ?",
-                (dev["device_id"],),
-            )
-    await db.commit()
-    logger.info(f"Heartbeat 트리거 발송: {len(devices)}대 (KST {current_hour:02d}:{current_minute:02d})")
+        from services.push_service import push_heartbeat_trigger
+        for dev in devices:
+            token_invalid = await push_heartbeat_trigger(dev["fcm_token"], dev["platform"])
+            if token_invalid:
+                await db.execute(
+                    "UPDATE devices SET fcm_token = NULL WHERE device_id = $1",
+                    dev["device_id"],
+                )
+        logger.info(f"Heartbeat 트리거 발송: {len(devices)}대 (KST {current_hour:02d}:{current_minute:02d})")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -89,55 +75,51 @@ async def job_heartbeat_check() -> None:
     now_kst = datetime.now(KST)
     current_minutes = now_kst.hour * 60 + now_kst.minute
 
-    db = await _get_db()
-
     # heartbeat 시각 + 120분 = 현재인 기기 중 오늘 미수신
     # last_seen < 오늘 자정(KST → UTC 기준)
     today_kst_start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_utc_start = today_kst_start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    today_utc_start = today_kst_start.astimezone(timezone.utc)
 
-    async with db.execute(
-        """SELECT u.id AS user_id, d.device_id, d.last_seen,
-                  d.battery_level,
-                  d.suspicious_count, d.platform,
-                  d.heartbeat_hour, d.heartbeat_minute
-           FROM users u
-           JOIN devices d ON u.id = d.user_id
-           WHERE u.role = 'subject'
-             AND (d.heartbeat_hour * 60 + d.heartbeat_minute + 120) = ?
-             AND d.last_seen < ?""",
-        (current_minutes, today_utc_start),
-    ) as cur:
-        missed = await cur.fetchall()
+    from database import get_pool
+    async with get_pool().acquire() as db:
+        missed = await db.fetch(
+            """SELECT u.id AS user_id, d.device_id, d.last_seen,
+                      d.battery_level,
+                      d.suspicious_count, d.platform,
+                      d.heartbeat_hour, d.heartbeat_minute
+               FROM users u
+               JOIN devices d ON u.id = d.user_id
+               WHERE u.role = 'subject'
+                 AND (d.heartbeat_hour * 60 + d.heartbeat_minute + 120) = $1
+                 AND d.last_seen < $2""",
+            current_minutes, today_utc_start,
+        )
 
-    for row in missed:
-        await _process_missed_heartbeat(db, dict(row))
+        for row in missed:
+            await _process_missed_heartbeat(db, dict(row))
 
 
-
-
-async def _process_missed_heartbeat(db: aiosqlite.Connection, row: dict) -> None:
+async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
     user_id = row["user_id"]
     battery_level = row["battery_level"] or 0
 
     # 구독 활성 보호자 확인
-    async with db.execute(
+    guardians = await db.fetch(
         """SELECT g.guardian_user_id, d.fcm_token
            FROM guardians g
            JOIN subscriptions s ON s.user_id = g.guardian_user_id
            JOIN devices d ON d.user_id = g.guardian_user_id
-           WHERE g.subject_user_id = ?
+           WHERE g.subject_user_id = $1
              AND s.plan != 'expired'
-             AND s.expires_at > datetime('now')
+             AND s.expires_at > NOW()
              AND d.fcm_token IS NOT NULL""",
-        (user_id,),
-    ) as cur:
-        guardians = await cur.fetchall()
+        user_id,
+    )
 
     if not guardians:
         return
 
-    last_seen_str = row["last_seen"]
+    last_seen_dt = row["last_seen"]  # TIMESTAMPTZ → datetime
     from services.alert_service import create_alert, has_active_alert
     from services.push_service import (
         push_battery_dead, push_caution, push_warning, push_urgent
@@ -146,9 +128,9 @@ async def _process_missed_heartbeat(db: aiosqlite.Connection, row: dict) -> None
     # 1. 배터리 ≤ 10% → 정보 등급 1회 발송 후 종료 (이후 상향 없음)
     if battery_level <= 10:
         if not await has_active_alert(db, user_id, "info"):
-            await create_alert(db, user_id, "info", last_seen_str)
+            await create_alert(db, user_id, "info", last_seen_dt)
             for g in guardians:
-                settings = await _get_guardian_settings(db, g["guardian_user_id"])
+                settings = await get_guardian_settings(db, g["guardian_user_id"])
                 if _can_send(settings, "info"):
                     await push_battery_dead(g["fcm_token"], user_id, battery_level)
         return
@@ -162,37 +144,37 @@ async def _process_missed_heartbeat(db: aiosqlite.Connection, row: dict) -> None
 
     if has_urgent:
         # 긴급 지속 — days_inactive 증가 + 반복 발송
-        await _escalate_urgent_if_needed(db, user_id, last_seen_str, guardians)
+        await _escalate_urgent_if_needed(db, user_id, last_seen_dt, guardians)
 
     elif has_warning:
         # 경고 3회 이상 → 긴급 상향
-        await create_alert(db, user_id, "urgent", last_seen_str)
+        await create_alert(db, user_id, "urgent", last_seen_dt)
         for g in guardians:
-            settings = await _get_guardian_settings(db, g["guardian_user_id"])
+            settings = await get_guardian_settings(db, g["guardian_user_id"])
             if _can_send(settings, "urgent"):
                 await push_urgent(g["fcm_token"], user_id)
 
     elif has_caution:
         # 2회 미수신 → 경고
-        await create_alert(db, user_id, "warning", last_seen_str, days_inactive=2)
+        await create_alert(db, user_id, "warning", last_seen_dt, days_inactive=2)
         for g in guardians:
-            settings = await _get_guardian_settings(db, g["guardian_user_id"])
+            settings = await get_guardian_settings(db, g["guardian_user_id"])
             if _can_send(settings, "warning"):
                 await push_warning(g["fcm_token"], user_id)
 
     else:
         # 1회 미수신 → 주의
-        await create_alert(db, user_id, "caution", last_seen_str)
+        await create_alert(db, user_id, "caution", last_seen_dt)
         for g in guardians:
-            settings = await _get_guardian_settings(db, g["guardian_user_id"])
+            settings = await get_guardian_settings(db, g["guardian_user_id"])
             if _can_send(settings, "caution"):
                 await push_caution(g["fcm_token"], user_id)
 
 
 async def _escalate_urgent_if_needed(
-    db: aiosqlite.Connection,
+    db: asyncpg.Connection,
     user_id: int,
-    last_seen_str: str,
+    last_seen_dt: datetime,
     guardians: list,
 ) -> None:
     """긴급 등급 기존 경고 업데이트 + 2차 보호자 발송"""
@@ -200,17 +182,14 @@ async def _escalate_urgent_if_needed(
     # days_inactive 증가
     await db.execute(
         """UPDATE alerts SET days_inactive = days_inactive + 1
-           WHERE subject_user_id = ? AND alert_level = 'urgent' AND status = 'active'""",
-        (user_id,),
+           WHERE subject_user_id = $1 AND alert_level = 'urgent' AND status = 'active'""",
+        user_id,
     )
-    await db.commit()
     # 모든 보호자에게 2차 발송 (긴급은 DND 무관)
     for g in guardians:
-        settings = await _get_guardian_settings(db, g["guardian_user_id"])
+        settings = await get_guardian_settings(db, g["guardian_user_id"])
         if _can_send(settings, "urgent"):
             await push_urgent_secondary(g["fcm_token"], user_id)
-
-
 
 
 # ─────────────────────────────────────────────────────────────
@@ -218,31 +197,30 @@ async def _escalate_urgent_if_needed(
 # ─────────────────────────────────────────────────────────────
 
 async def job_subscription_expire_check() -> None:
-    db = await _get_db()
-    async with db.execute(
-        """SELECT u.id AS user_id, d.fcm_token
-           FROM users u
-           JOIN subscriptions s ON u.id = s.user_id
-           LEFT JOIN devices d ON d.user_id = u.id
-           WHERE u.role = 'guardian'
-             AND s.plan IN ('free_trial', 'yearly')
-             AND s.expires_at < datetime('now')""",
-    ) as cur:
-        expired = await cur.fetchall()
-
-    from services.push_service import push_subscription_expired
-
-    for row in expired:
-        await db.execute(
-            "UPDATE subscriptions SET plan = 'expired', updated_at = datetime('now') WHERE user_id = ?",
-            (row["user_id"],),
+    from database import get_pool
+    async with get_pool().acquire() as db:
+        expired = await db.fetch(
+            """SELECT u.id AS user_id, d.fcm_token
+               FROM users u
+               JOIN subscriptions s ON u.id = s.user_id
+               LEFT JOIN devices d ON d.user_id = u.id
+               WHERE u.role = 'guardian'
+                 AND s.plan IN ('free_trial', 'yearly')
+                 AND s.expires_at < NOW()""",
         )
-        if row["fcm_token"]:
-            await push_subscription_expired(row["fcm_token"])
 
-    if expired:
-        await db.commit()
-        logger.info(f"구독 만료 처리: {len(expired)}명")
+        from services.push_service import push_subscription_expired
+
+        for row in expired:
+            await db.execute(
+                "UPDATE subscriptions SET plan = 'expired', updated_at = NOW() WHERE user_id = $1",
+                row["user_id"],
+            )
+            if row["fcm_token"]:
+                await push_subscription_expired(row["fcm_token"])
+
+        if expired:
+            logger.info(f"구독 만료 처리: {len(expired)}명")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -250,33 +228,33 @@ async def job_subscription_expire_check() -> None:
 # ─────────────────────────────────────────────────────────────
 
 async def job_cleanup_orphan_subjects() -> None:
-    db = await _get_db()
-    async with db.execute(
-        """SELECT u.id FROM users u
-           WHERE u.role = 'subject'
-             AND u.created_at < datetime('now', '-30 days')
-             AND NOT EXISTS (
-               SELECT 1 FROM guardians g WHERE g.subject_user_id = u.id
-             )""",
-    ) as cur:
-        subjects = [row["id"] for row in await cur.fetchall()]
+    from database import get_pool
+    async with get_pool().acquire() as db:
+        subjects_rows = await db.fetch(
+            """SELECT u.id FROM users u
+               WHERE u.role = 'subject'
+                 AND u.created_at < NOW() - INTERVAL '30 days'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM guardians g WHERE g.subject_user_id = u.id
+                 )""",
+        )
+        subjects = [row["id"] for row in subjects_rows]
 
-    for user_id in subjects:
-        async with db.execute(
-            "SELECT device_id FROM devices WHERE user_id = ?", (user_id,)
-        ) as cur:
-            device_ids = [row["device_id"] for row in await cur.fetchall()]
+        for user_id in subjects:
+            device_rows = await db.fetch(
+                "SELECT device_id FROM devices WHERE user_id = $1", user_id
+            )
+            for dev in device_rows:
+                await db.execute(
+                    "DELETE FROM heartbeat_logs WHERE device_id = $1", dev["device_id"]
+                )
 
-        for device_id in device_ids:
-            await db.execute("DELETE FROM heartbeat_logs WHERE device_id = ?", (device_id,))
+            await db.execute("DELETE FROM alerts WHERE subject_user_id = $1", user_id)
+            await db.execute("DELETE FROM devices WHERE user_id = $1", user_id)
+            await db.execute("DELETE FROM users WHERE id = $1", user_id)
 
-        await db.execute("DELETE FROM alerts WHERE subject_user_id = ?", (user_id,))
-        await db.execute("DELETE FROM devices WHERE user_id = ?", (user_id,))
-        await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-
-    if subjects:
-        await db.commit()
-        logger.info(f"보호자 미연결 대상자 정리: {len(subjects)}명")
+        if subjects:
+            logger.info(f"보호자 미연결 대상자 정리: {len(subjects)}명")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -284,11 +262,11 @@ async def job_cleanup_orphan_subjects() -> None:
 # ─────────────────────────────────────────────────────────────
 
 async def job_cleanup_old_logs() -> None:
-    db = await _get_db()
-    await db.execute(
-        "DELETE FROM heartbeat_logs WHERE server_ts < datetime('now', '-30 days')"
-    )
-    await db.commit()
+    from database import get_pool
+    async with get_pool().acquire() as db:
+        await db.execute(
+            "DELETE FROM heartbeat_logs WHERE server_ts < NOW() - INTERVAL '30 days'"
+        )
     logger.info("30일 초과 heartbeat_logs 삭제 완료")
 
 

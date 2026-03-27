@@ -5,7 +5,7 @@ import config  # .env 로드 (FIREBASE_CREDENTIALS 등)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from database import init_db, close_db
+from database import init_pool, close_pool
 from services.scheduler import setup_scheduler
 from routers import user, heartbeat, subject, alert, device, app_version, subscription
 from routers import guardian_notification_settings
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 시작
-    await init_db()
+    await init_pool()
     logger.info("DB 초기화 완료")
 
     sched = setup_scheduler()
@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
 
     # 종료
     sched.shutdown(wait=False)
-    await close_db()
+    await close_pool()
     logger.info("서버 종료")
 
 

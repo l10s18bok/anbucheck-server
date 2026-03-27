@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-import aiosqlite
+import asyncpg
 
 from config import ADMIN_SECRET_KEY
 from database import get_db
@@ -28,16 +28,15 @@ def _compare_versions(v1: str, v2: str) -> int:
 async def version_check(
     platform: str = Query(...),
     current_version: str = Query(...),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     if platform not in ("android", "ios"):
         raise HTTPException(status_code=400, detail="platform은 'android' 또는 'ios'여야 합니다")
 
-    async with db.execute(
-        "SELECT latest_version, min_version, store_url FROM app_versions WHERE platform = ?",
-        (platform,),
-    ) as cur:
-        row = await cur.fetchone()
+    row = await db.fetchrow(
+        "SELECT latest_version, min_version, store_url FROM app_versions WHERE platform = $1",
+        platform,
+    )
 
     if row is None:
         raise HTTPException(status_code=404, detail="버전 정보를 찾을 수 없습니다")
@@ -63,7 +62,7 @@ def _verify_admin(x_admin_key: str = Header(..., alias="X-Admin-Key")) -> None:
 async def set_app_version(
     body: AppVersionUpdateIn,
     _: None = Depends(_verify_admin),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     if body.platform not in ("android", "ios"):
         raise HTTPException(status_code=400, detail="platform은 'android' 또는 'ios'여야 합니다")
@@ -71,47 +70,55 @@ async def set_app_version(
     if _compare_versions(body.latest_version, body.min_version) < 0:
         raise HTTPException(status_code=400, detail="latest_version은 min_version 이상이어야 합니다")
 
-    async with db.execute(
-        "SELECT store_url FROM app_versions WHERE platform = ?", (body.platform,)
-    ) as cur:
-        existing = await cur.fetchone()
+    existing = await db.fetchrow(
+        "SELECT store_url FROM app_versions WHERE platform = $1", body.platform
+    )
 
     store_url = body.store_url or (existing["store_url"] if existing else "")
 
     await db.execute(
         """INSERT INTO app_versions (platform, latest_version, min_version, store_url, updated_at)
-           VALUES (?, ?, ?, ?, datetime('now'))
-           ON CONFLICT(platform) DO UPDATE SET
-             latest_version = excluded.latest_version,
-             min_version = excluded.min_version,
-             store_url = excluded.store_url,
-             updated_at = excluded.updated_at""",
-        (body.platform, body.latest_version, body.min_version, store_url),
+           VALUES ($1, $2, $3, $4, NOW())
+           ON CONFLICT (platform) DO UPDATE SET
+             latest_version = EXCLUDED.latest_version,
+             min_version = EXCLUDED.min_version,
+             store_url = EXCLUDED.store_url,
+             updated_at = EXCLUDED.updated_at""",
+        body.platform, body.latest_version, body.min_version, store_url,
     )
-    await db.commit()
 
-    async with db.execute(
-        "SELECT platform, latest_version, min_version, store_url, updated_at FROM app_versions WHERE platform = ?",
-        (body.platform,),
-    ) as cur:
-        row = await cur.fetchone()
+    row = await db.fetchrow(
+        "SELECT platform, latest_version, min_version, store_url, updated_at FROM app_versions WHERE platform = $1",
+        body.platform,
+    )
 
-    return AppVersionOut(**dict(row))
+    return AppVersionOut(
+        platform=row["platform"],
+        latest_version=row["latest_version"],
+        min_version=row["min_version"],
+        store_url=row["store_url"],
+        updated_at=row["updated_at"].isoformat() if row["updated_at"] else None,
+    )
 
 
 @router.get("/admin/app-version", response_model=AppVersionOut)
 async def get_app_version(
     platform: str = Query(...),
     _: None = Depends(_verify_admin),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
-    async with db.execute(
-        "SELECT platform, latest_version, min_version, store_url, updated_at FROM app_versions WHERE platform = ?",
-        (platform,),
-    ) as cur:
-        row = await cur.fetchone()
+    row = await db.fetchrow(
+        "SELECT platform, latest_version, min_version, store_url, updated_at FROM app_versions WHERE platform = $1",
+        platform,
+    )
 
     if row is None:
         raise HTTPException(status_code=404, detail="버전 정보를 찾을 수 없습니다")
 
-    return AppVersionOut(**dict(row))
+    return AppVersionOut(
+        platform=row["platform"],
+        latest_version=row["latest_version"],
+        min_version=row["min_version"],
+        store_url=row["store_url"],
+        updated_at=row["updated_at"].isoformat() if row["updated_at"] else None,
+    )

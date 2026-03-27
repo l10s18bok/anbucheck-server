@@ -1,6 +1,6 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
-import aiosqlite
+import asyncpg
 
 from database import get_db
 from middleware.auth import require_guardian
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
 async def list_alerts(
     subject_user_id: Optional[int] = Query(None),
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     rows = await get_active_alerts(db, user["user_id"], subject_user_id)
     alerts = [
@@ -36,7 +36,7 @@ async def list_alerts(
 async def clear_one(
     alert_id: int,
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     await clear_alert(db, alert_id, user["user_id"])
     return {"message": "경고가 클리어되었습니다. 이후 다음 지정 시각에 미수신 시 새로운 경고가 발생합니다."}
@@ -46,7 +46,7 @@ async def clear_one(
 async def clear_all(
     body: ClearAllIn,
     user: dict = Depends(require_guardian),
-    db: aiosqlite.Connection = Depends(get_db),
+    db: asyncpg.Connection = Depends(get_db),
 ):
     result = await clear_all_alerts(db, body.subject_user_id, user["user_id"])
     return ClearAllOut(**result)
