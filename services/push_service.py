@@ -62,10 +62,10 @@ async def push_heartbeat_trigger(fcm_token: str, platform: str) -> bool:
                 token=fcm_token,
             )
         messaging.send(message)
-        return True
+        return False  # 정상 발송 = 토큰 유효 (token_invalid = False)
     except Exception as e:
         logger.error(f"Heartbeat 트리거 Push 발송 실패 ({fcm_token[:10]}...): {e}")
-        return _is_token_error(e)
+        return _is_token_error(e)  # 토큰 오류 시에만 True
 
 
 async def send_push(
