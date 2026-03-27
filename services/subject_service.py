@@ -114,12 +114,20 @@ async def unlink_subject(db: aiosqlite.Connection, guardian_id: int, guardian_us
     await db.commit()
 
 
+def _to_utc_str(dt_str: str | None) -> str | None:
+    """DB에서 가져온 UTC datetime 문자열을 ISO 8601 UTC(Z 접미사)로 변환.
+    SQLite datetime()은 공백 구분자를 사용하므로 T로 정규화 후 Z 추가."""
+    if dt_str is None:
+        return None
+    return dt_str.replace(' ', 'T') + 'Z'
+
+
 async def _get_last_seen(db: aiosqlite.Connection, subject_user_id: int) -> str | None:
     async with db.execute(
         "SELECT last_seen FROM devices WHERE user_id = ?", (subject_user_id,)
     ) as cur:
         row = await cur.fetchone()
-    return row["last_seen"] if row else None
+    return _to_utc_str(row["last_seen"]) if row else None
 
 
 async def _get_active_alert(db: aiosqlite.Connection, subject_user_id: int) -> dict | None:
