@@ -5,7 +5,7 @@ from typing import Optional
 class HeartbeatIn(BaseModel):
     device_id: str
     timestamp: str
-    source: str  # workmanager | silent_push | foreground
+    manual: bool = False
     accel_x: Optional[float] = None
     accel_y: Optional[float] = None
     accel_z: Optional[float] = None

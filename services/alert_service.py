@@ -1,5 +1,6 @@
 from datetime import datetime, timezone, timedelta
 import logging
+from typing import Optional
 
 import aiosqlite
 
@@ -8,6 +9,68 @@ from services import push_service
 logger = logging.getLogger(__name__)
 
 KST = timezone(timedelta(hours=9))
+
+_LEVEL_KEY_MAP = {
+    "urgent":  "urgent_enabled",
+    "warning": "warning_enabled",
+    "caution": "caution_enabled",
+    "info":    "info_enabled",
+}
+
+
+async def get_guardian_settings(db: aiosqlite.Connection, guardian_user_id: int) -> dict:
+    """보호자 알림 설정 조회 — 없으면 기본값(모두 ON) 반환"""
+    async with db.execute(
+        "SELECT * FROM guardian_notification_settings WHERE guardian_user_id = ?",
+        (guardian_user_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return {
+            "all_enabled": 1, "urgent_enabled": 1, "warning_enabled": 1,
+            "caution_enabled": 1, "info_enabled": 1,
+            "dnd_enabled": 0, "dnd_start": None, "dnd_end": None,
+        }
+    return dict(row)
+
+
+def is_in_dnd(settings: dict) -> bool:
+    """현재 KST 시각이 방해금지 시간대인지 확인"""
+    if not settings["dnd_enabled"]:
+        return False
+    dnd_start = settings.get("dnd_start")
+    dnd_end   = settings.get("dnd_end")
+    if not dnd_start or not dnd_end:
+        return False
+
+    now_kst     = datetime.now(KST)
+    now_minutes = now_kst.hour * 60 + now_kst.minute
+    start_h, start_m = map(int, dnd_start.split(":"))
+    end_h,   end_m   = map(int, dnd_end.split(":"))
+    start_minutes = start_h * 60 + start_m
+    end_minutes   = end_h   * 60 + end_m
+
+    if start_minutes <= end_minutes:
+        return start_minutes <= now_minutes <= end_minutes
+    # 자정을 넘기는 경우 (예: 22:00 ~ 07:00)
+    return now_minutes >= start_minutes or now_minutes <= end_minutes
+
+
+def should_send(settings: dict, level: str) -> bool:
+    """알림 자체를 보낼지 여부 (DND와 무관한 ON/OFF 설정만 확인)"""
+    if not settings["all_enabled"]:
+        return False
+    key = _LEVEL_KEY_MAP.get(level)
+    if key and not settings[key]:
+        return False
+    return True
+
+
+def use_sound(settings: dict, level: str) -> bool:
+    """소리 알림 여부 — 긴급은 DND 무관 항상 소리, 나머지는 DND 시간대면 무음"""
+    if level == "urgent":
+        return True
+    return not is_in_dnd(settings)
 
 
 async def get_active_alerts(db: aiosqlite.Connection, guardian_user_id: int, subject_user_id: int | None = None) -> list[dict]:
@@ -101,7 +164,7 @@ async def clear_all_alerts(
 
 
 async def resolve_active_alerts(db: aiosqlite.Connection, subject_user_id: int) -> list[str]:
-    """heartbeat 수신 시 활성 경고 해소 처리, 보호자 Push 발송"""
+    """heartbeat 수신 시 활성 경고 해소 처리, 보호자 Push 발송 (DND 적용)"""
     async with db.execute(
         """SELECT a.id, a.alert_level FROM alerts a
            WHERE a.subject_user_id = ? AND a.status = 'active'""",
@@ -112,7 +175,6 @@ async def resolve_active_alerts(db: aiosqlite.Connection, subject_user_id: int) 
     if not active:
         return []
 
-    now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
     await db.execute(
         "DELETE FROM alerts WHERE subject_user_id = ? AND status = 'active'",
         (subject_user_id,),
@@ -123,19 +185,31 @@ async def resolve_active_alerts(db: aiosqlite.Connection, subject_user_id: int) 
 
     # 정상 복귀 알림은 caution/warning/urgent 해소 시에만 발송
     # info(배터리)만 해소될 경우 정상 복귀 알림 없음
-    should_notify = bool(set(resolved_levels) & {"caution", "warning", "urgent"})
+    if not bool(set(resolved_levels) & {"caution", "warning", "urgent"}):
+        return resolved_levels
 
-    if should_notify:
-        async with db.execute(
-            """SELECT d.fcm_token FROM guardians g
-               JOIN devices d ON d.user_id = g.guardian_user_id
-               WHERE g.subject_user_id = ? AND d.fcm_token IS NOT NULL""",
-            (subject_user_id,),
-        ) as cur:
-            tokens = [row["fcm_token"] for row in await cur.fetchall()]
+    # 해소된 등급 중 가장 높은 등급으로 DND/소리 여부 결정
+    if "urgent" in resolved_levels:
+        effective_level = "urgent"
+    elif "warning" in resolved_levels:
+        effective_level = "warning"
+    else:
+        effective_level = "caution"
 
-        for token in tokens:
-            await push_service.push_resolved(token, subject_user_id)
+    async with db.execute(
+        """SELECT g.guardian_user_id, d.fcm_token FROM guardians g
+           JOIN devices d ON d.user_id = g.guardian_user_id
+           WHERE g.subject_user_id = ? AND d.fcm_token IS NOT NULL""",
+        (subject_user_id,),
+    ) as cur:
+        guardians = await cur.fetchall()
+
+    for guardian in guardians:
+        settings = await get_guardian_settings(db, guardian["guardian_user_id"])
+        if not should_send(settings, effective_level):
+            continue
+        sound = "default" if use_sound(settings, effective_level) else None
+        await push_service.push_resolved(guardian["fcm_token"], subject_user_id, sound=sound)
 
     return resolved_levels
 

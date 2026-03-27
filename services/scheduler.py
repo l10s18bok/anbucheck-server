@@ -17,11 +17,22 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 import aiosqlite
 
+from services.alert_service import get_guardian_settings, is_in_dnd, should_send, use_sound
+
 logger = logging.getLogger(__name__)
 
 KST = timezone(timedelta(hours=9))
 
 scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
+
+
+def _can_send(settings: dict, level: str) -> bool:
+    """스케줄러용 발송 가능 여부 — DND 시간대에는 발송 안 함 (urgent 제외)"""
+    return should_send(settings, level) and use_sound(settings, level)
+
+
+async def _get_guardian_settings(db: aiosqlite.Connection, guardian_user_id: int) -> dict:
+    return await get_guardian_settings(db, guardian_user_id)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -103,63 +114,6 @@ async def job_heartbeat_check() -> None:
         await _process_missed_heartbeat(db, dict(row))
 
 
-async def _get_guardian_settings(db: aiosqlite.Connection, guardian_user_id: int) -> dict:
-    """보호자 알림 설정 조회 — 없으면 기본값(모두 ON) 반환"""
-    async with db.execute(
-        "SELECT * FROM guardian_notification_settings WHERE guardian_user_id = ?",
-        (guardian_user_id,),
-    ) as cur:
-        row = await cur.fetchone()
-    if row is None:
-        return {
-            "all_enabled": 1, "urgent_enabled": 1, "warning_enabled": 1,
-            "caution_enabled": 1, "info_enabled": 1,
-            "dnd_enabled": 0, "dnd_start": None, "dnd_end": None,
-        }
-    return dict(row)
-
-
-def _is_in_dnd(settings: dict) -> bool:
-    """현재 KST 시각이 방해금지 시간대에 해당하는지 확인"""
-    if not settings["dnd_enabled"]:
-        return False
-    dnd_start = settings.get("dnd_start")
-    dnd_end = settings.get("dnd_end")
-    if not dnd_start or not dnd_end:
-        return False
-
-    now_kst = datetime.now(KST)
-    now_minutes = now_kst.hour * 60 + now_kst.minute
-
-    start_h, start_m = map(int, dnd_start.split(":"))
-    end_h, end_m = map(int, dnd_end.split(":"))
-    start_minutes = start_h * 60 + start_m
-    end_minutes = end_h * 60 + end_m
-
-    if start_minutes <= end_minutes:
-        return start_minutes <= now_minutes <= end_minutes
-    else:
-        # 자정을 넘기는 경우 (예: 22:00 ~ 07:00)
-        return now_minutes >= start_minutes or now_minutes <= end_minutes
-
-
-def _can_send(settings: dict, level: str) -> bool:
-    """설정 및 DND 기준으로 해당 등급 푸시 발송 가능 여부 확인
-    긴급(urgent)은 DND 무관하게 항상 발송"""
-    if not settings["all_enabled"]:
-        return False
-    level_map = {
-        "urgent": "urgent_enabled",
-        "warning": "warning_enabled",
-        "caution": "caution_enabled",
-        "info": "info_enabled",
-    }
-    key = level_map.get(level)
-    if key and not settings[key]:
-        return False
-    if level != "urgent" and _is_in_dnd(settings):
-        return False
-    return True
 
 
 async def _process_missed_heartbeat(db: aiosqlite.Connection, row: dict) -> None:

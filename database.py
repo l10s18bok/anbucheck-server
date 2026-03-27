@@ -108,7 +108,6 @@ CREATE INDEX IF NOT EXISTS idx_alerts_subject ON alerts (subject_user_id, create
 CREATE TABLE IF NOT EXISTS heartbeat_logs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id     TEXT NOT NULL,
-    source        TEXT,
     accel_x       REAL,
     accel_y       REAL,
     accel_z       REAL,

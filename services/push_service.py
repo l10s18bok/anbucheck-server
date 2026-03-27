@@ -174,12 +174,23 @@ async def push_urgent_secondary(fcm_token: str, subject_user_id: int) -> bool:
     )
 
 
-async def push_resolved(fcm_token: str, subject_user_id: int) -> bool:
+async def push_resolved(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default") -> bool:
     return await send_push(
         fcm_token,
         title="✅ 안부 확인",
         body="대상자의 생존확인이 정상 복귀되었습니다.",
         data={"type": "alert_resolved", "subject_user_id": str(subject_user_id)},
+        sound=sound,
+    )
+
+
+async def push_manual_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default") -> bool:
+    return await send_push(
+        fcm_token,
+        title="✅ 수동 안부 확인",
+        body="대상자께서 직접 안부 확인을 보냈습니다.",
+        data={"type": "manual_report", "subject_user_id": str(subject_user_id)},
+        sound=sound,
     )
 
 
