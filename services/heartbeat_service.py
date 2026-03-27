@@ -75,20 +75,23 @@ async def process_heartbeat(db: aiosqlite.Connection, user_id: int, payload: dic
     # suspicious=true면 폰 신호만 온 것이므로 warning/urgent → caution 하향만 처리
     if not suspicious:
         resolved = await alert_service.resolve_active_alerts(db, user_id)
-        # 수동 보고이고 해소할 경고가 없는 평상시 → 보호자에게 수동 안부 확인 알림 발송
-        if manual and not resolved:
-            await _send_manual_report_to_guardians(db, user_id)
+        if not resolved:
+            # 경고 해소 없음 → 수동/자동 안부 알림 발송
+            if manual:
+                await _send_manual_report_to_guardians(db, user_id)
+            else:
+                await _send_auto_report_to_guardians(db, user_id)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
 
     # suspicious 판정 처리
     await _handle_suspicious(db, user_id, device_id, suspicious, new_suspicious_count)
 
-    # 배터리 ≤ 10% → 보호자 정보 알림 (1회만 발송)
+    # 배터리 ≤ 10% → 보호자 정보 알림 (1회만 발송, DND 적용)
     if battery_level is not None and battery_level <= 10:
         if not await alert_service.has_active_alert(db, user_id, "info"):
             await alert_service.create_alert(db, user_id, "info", now_str)
-            await alert_service.send_alert_to_guardians(db, user_id, "info_battery_low")
+            await _send_battery_low_to_guardians(db, user_id)
 
     heartbeat_hour = device["heartbeat_hour"]
     heartbeat_minute = device["heartbeat_minute"]
@@ -144,6 +147,52 @@ async def _send_wellbeing_check_if_enabled(
         row = await cur.fetchone()
     if row and row["fcm_token"]:
         await push_service.push_wellbeing_check(row["fcm_token"])
+
+
+async def _send_battery_low_to_guardians(db: aiosqlite.Connection, user_id: int) -> None:
+    """배터리 부족 알림 — 구독 활성 보호자에게 발송 (DND 적용)"""
+    async with db.execute(
+        """SELECT g.guardian_user_id, d.fcm_token
+           FROM guardians g
+           JOIN subscriptions s ON s.user_id = g.guardian_user_id
+           JOIN devices d ON d.user_id = g.guardian_user_id
+           WHERE g.subject_user_id = ?
+             AND s.plan != 'expired'
+             AND s.expires_at > datetime('now')
+             AND d.fcm_token IS NOT NULL""",
+        (user_id,),
+    ) as cur:
+        guardians = await cur.fetchall()
+
+    for guardian in guardians:
+        settings = await get_guardian_settings(db, guardian["guardian_user_id"])
+        if not should_send(settings, "info"):
+            continue
+        sound = "default" if use_sound(settings, "info") else None
+        await push_service.push_battery_low(guardian["fcm_token"], user_id, sound=sound)
+
+
+async def _send_auto_report_to_guardians(db: aiosqlite.Connection, user_id: int) -> None:
+    """정상 상태 자동 안부 확인 — 구독 활성 보호자에게 알림 발송 (DND 적용)"""
+    async with db.execute(
+        """SELECT g.guardian_user_id, d.fcm_token
+           FROM guardians g
+           JOIN subscriptions s ON s.user_id = g.guardian_user_id
+           JOIN devices d ON d.user_id = g.guardian_user_id
+           WHERE g.subject_user_id = ?
+             AND s.plan != 'expired'
+             AND s.expires_at > datetime('now')
+             AND d.fcm_token IS NOT NULL""",
+        (user_id,),
+    ) as cur:
+        guardians = await cur.fetchall()
+
+    for guardian in guardians:
+        settings = await get_guardian_settings(db, guardian["guardian_user_id"])
+        if not should_send(settings, "info"):
+            continue
+        sound = "default" if use_sound(settings, "info") else None
+        await push_service.push_auto_report(guardian["fcm_token"], user_id, sound=sound)
 
 
 async def _send_manual_report_to_guardians(db: aiosqlite.Connection, user_id: int) -> None:

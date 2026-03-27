@@ -188,14 +188,6 @@ async def resolve_active_alerts(db: aiosqlite.Connection, subject_user_id: int) 
     if not bool(set(resolved_levels) & {"caution", "warning", "urgent"}):
         return resolved_levels
 
-    # 해소된 등급 중 가장 높은 등급으로 DND/소리 여부 결정
-    if "urgent" in resolved_levels:
-        effective_level = "urgent"
-    elif "warning" in resolved_levels:
-        effective_level = "warning"
-    else:
-        effective_level = "caution"
-
     async with db.execute(
         """SELECT g.guardian_user_id, d.fcm_token FROM guardians g
            JOIN devices d ON d.user_id = g.guardian_user_id
@@ -206,9 +198,9 @@ async def resolve_active_alerts(db: aiosqlite.Connection, subject_user_id: int) 
 
     for guardian in guardians:
         settings = await get_guardian_settings(db, guardian["guardian_user_id"])
-        if not should_send(settings, effective_level):
+        if not should_send(settings, "info"):
             continue
-        sound = "default" if use_sound(settings, effective_level) else None
+        sound = "default" if use_sound(settings, "info") else None
         await push_service.push_resolved(guardian["fcm_token"], subject_user_id, sound=sound)
 
     return resolved_levels

@@ -85,11 +85,11 @@ async def send_push(
             notification=messaging.Notification(title=title, body=body),
             data=msg_data,
             android=messaging.AndroidConfig(
-                notification=messaging.AndroidNotification(sound=sound or "default")
+                notification=messaging.AndroidNotification(sound=sound)
             ),
             apns=messaging.APNSConfig(
                 payload=messaging.APNSPayload(
-                    aps=messaging.Aps(sound=sound or "default")
+                    aps=messaging.Aps(sound=sound or "")  # 빈 문자열 = iOS 무음
                 )
             ),
             token=fcm_token,
@@ -109,23 +109,23 @@ def _is_token_error(exc: Exception) -> bool:
 
 # 경고 Push 메시지 헬퍼
 
-async def push_battery_low(fcm_token: str, subject_user_id: int) -> bool:
+async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default") -> bool:
     return await send_push(
         fcm_token,
         title="🔋 대상자 폰 배터리 부족",
         body="폰 배터리가 10% 이하입니다. 충전이 필요할 수 있습니다.",
         data={"type": "alert_info", "reason": "battery_low", "subject_user_id": str(subject_user_id)},
-        sound=None,
+        sound=sound,
     )
 
 
-async def push_battery_dead(fcm_token: str, subject_user_id: int, battery_level: int) -> bool:
+async def push_battery_dead(fcm_token: str, subject_user_id: int, battery_level: int, sound: Optional[str] = "default") -> bool:
     return await send_push(
         fcm_token,
         title="🔋 배터리 방전 추정",
         body=f"대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 마지막 배터리 잔량: {battery_level}%. 충전 후 자동으로 정상 복귀됩니다.",
         data={"type": "alert_info", "reason": "battery_dead", "subject_user_id": str(subject_user_id)},
-        sound=None,
+        sound=sound,
     )
 
 
@@ -225,6 +225,16 @@ async def push_wellbeing_check(fcm_token: str) -> bool:
         title="💛 안부 확인",
         body="잘 지내고 계시죠? 화면을 한 번 터치해 주세요.",
         data={"type": "wellbeing_check"},
+    )
+
+
+async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default") -> bool:
+    return await send_push(
+        fcm_token,
+        title="✅ 오늘 생존확인 완료",
+        body="대상자의 오늘 생존확인이 정상 수신되었습니다.",
+        data={"type": "auto_report", "subject_user_id": str(subject_user_id)},
+        sound=sound,
     )
 
 
