@@ -13,7 +13,6 @@ from datetime import datetime, timezone, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 
 import asyncpg
 
@@ -54,6 +53,7 @@ async def job_heartbeat_trigger() -> None:
         )
 
         if not devices:
+            logger.debug(f"Heartbeat 트리거 해당 기기 없음 (KST {current_hour:02d}:{current_minute:02d})")
             return
 
         from services.push_service import push_heartbeat_trigger
@@ -275,8 +275,8 @@ async def job_cleanup_old_logs() -> None:
 # ─────────────────────────────────────────────────────────────
 
 def setup_scheduler() -> AsyncIOScheduler:
-    scheduler.add_job(job_heartbeat_trigger, IntervalTrigger(minutes=1), id="heartbeat_trigger", replace_existing=True)
-    scheduler.add_job(job_heartbeat_check, IntervalTrigger(minutes=1), id="heartbeat_check", replace_existing=True)
+    scheduler.add_job(job_heartbeat_trigger, CronTrigger(second=0), id="heartbeat_trigger", replace_existing=True)
+    scheduler.add_job(job_heartbeat_check, CronTrigger(second=0), id="heartbeat_check", replace_existing=True)
     scheduler.add_job(job_subscription_expire_check, CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="sub_expire", replace_existing=True)
     scheduler.add_job(job_cleanup_orphan_subjects, CronTrigger(hour=3, minute=0, timezone="Asia/Seoul"), id="cleanup_subjects", replace_existing=True)
     scheduler.add_job(job_cleanup_old_logs, CronTrigger(hour=4, minute=0, timezone="Asia/Seoul"), id="cleanup_logs", replace_existing=True)
