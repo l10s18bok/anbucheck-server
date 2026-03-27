@@ -84,7 +84,7 @@ async def get_subjects(db: aiosqlite.Connection, guardian_user_id: int) -> dict:
                 "guardian_id": row["guardian_id"],
                 "user_id": row["user_id"],
                 "invite_code": row["invite_code"],
-                "last_seen": row["last_seen"],
+                "last_seen": _to_utc_str(row["last_seen"]),
                 "status": "warning" if active_alert else "normal",
                 "alert": active_alert,
                 "device_id": row["device_id"],
