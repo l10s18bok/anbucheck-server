@@ -41,12 +41,20 @@ async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict
             role, invite_code, device_token,
         )
 
-        # devices 레코드 생성
+        # devices 레코드 생성 (동일 device_id 재가입 시 기존 레코드 교체)
         await db.execute(
             """INSERT INTO devices
                (user_id, device_id, platform, os_version, fcm_token,
                 heartbeat_hour, heartbeat_minute)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               ON CONFLICT (device_id) DO UPDATE SET
+                   user_id = EXCLUDED.user_id,
+                   platform = EXCLUDED.platform,
+                   os_version = EXCLUDED.os_version,
+                   fcm_token = EXCLUDED.fcm_token,
+                   heartbeat_hour = EXCLUDED.heartbeat_hour,
+                   heartbeat_minute = EXCLUDED.heartbeat_minute,
+                   updated_at = NOW()""",
             user_id,
             device["device_id"],
             device["platform"],
