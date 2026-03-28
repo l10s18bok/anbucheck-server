@@ -49,7 +49,7 @@ flowchart TD
     Compare -->|가속도 변화 ≥ 5.0 m/s²<br/>OR 자이로 변화 ≥ 0.3 rad/s| Normal[suspicious = false<br/>폰 사용 확인]
 
     Battery --> BattCheck{배터리 ≤ 20%?}
-    BattCheck -->|YES| SubjectNoti[대상자 로컬 알림<br/>📱 충전이 필요합니다<br/>배터리가 부족합니다<br/>충전하지 않으면 생존확인이<br/>중단될 수 있습니다]
+    BattCheck -->|YES| SubjectNoti[대상자 로컬 알림<br/>📱 충전이 필요합니다<br/>배터리가 부족합니다<br/>충전하지 않으면 안부 확인이<br/>중단될 수 있습니다]
     BattCheck -->|NO| Build
 
     SubjectNoti --> Build
@@ -64,7 +64,7 @@ flowchart TD
     Network -->|연결됨| Send[서버 전송<br/>POST /api/v1/heartbeat]
     Network -->|미연결| Queue[로컬 큐 저장<br/>sqflite]
 
-    Queue --> LocalNoti1[대상자 로컬 알림<br/>📱 인터넷 연결이 꺼져 있습니다<br/>생존확인이 전송되지 않고 있으며<br/>보호자에게 경고가 발생할 수 있습니다]
+    Queue --> LocalNoti1[대상자 로컬 알림<br/>📱 인터넷 연결이 꺼져 있습니다<br/>안부 확인이 전송되지 않고 있으며<br/>보호자에게 경고가 발생할 수 있습니다]
 
     Send --> DeadmanReset[데드맨 스위치 갱신<br/>기존 반복 알림 취소<br/>매일 반복 알림 재등록<br/>heartbeat 시각 + 2시간<br/>기본 11:30, repeats: true]
 
@@ -91,7 +91,7 @@ flowchart TD
     AlertActive{기존 경고 활성 중?}
     AlertActive -->|YES| SuspiciousFirst{suspicious?}
 
-    SuspiciousFirst -->|false| Resolve[경고 완전 해소<br/>보호자 Push 알림<br/>✅ 대상자의 생존확인이<br/>정상 복귀되었습니다]
+    SuspiciousFirst -->|false| Resolve[경고 완전 해소<br/>보호자 Push 알림<br/>✅ 대상자의 안부 확인이<br/>정상 복귀되었습니다]
     SuspiciousFirst -->|true| Downgrade[경고 등급 하향<br/>warning / urgent → caution<br/>정상 복귀 알림 없음<br/>폰 신호만 수신, 사용 흔적 없음]
 
     AlertActive -->|NO| CheckSuspicious{suspicious?}
@@ -127,13 +127,13 @@ flowchart TD
     CheckLastBatt -->|NO| MissCount{누적 미수신 횟수?}
 
     MissCount -->|1회| Caution[⚠ 주의 등급 판정]
-    Caution --> CautionNoti[보호자 Push 알림 주의 등급<br/>⚠ 안부 확인<br/>오늘 생존확인이 없습니다]
+    Caution --> CautionNoti[보호자 Push 알림 주의 등급<br/>⚠ 안부 확인<br/>오늘 안부 확인이 없습니다]
     CautionNoti --> NextDay0([다음 날 재확인])
 
     MissCount -->|2회 이상| Warning[⚠ 경고 등급 판정]
     Warning --> NightCheck1{현재 시각<br/>22:00~09:00?}
 
-    NightCheck1 -->|NO 주간| WarningNoti[보호자 Push 알림 경고 등급<br/>⚠ 안부 확인<br/>생존확인이 없습니다<br/>통신 불가 상태일 수 있습니다]
+    NightCheck1 -->|NO 주간| WarningNoti[보호자 Push 알림 경고 등급<br/>⚠ 안부 확인<br/>안부 확인이 없습니다<br/>통신 불가 상태일 수 있습니다]
     NightCheck1 -->|YES 야간| Delay1([DB에 기록 후<br/>다음 날 09:00에 발송 예약])
     Delay1 --> WarningNoti
 

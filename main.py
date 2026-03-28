@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Anbu (안부) API",
-    description="생존확인 앱 서버 API",
+    description="안부(Anbu) 앱 서버 API",
     version="1.0.0",
     lifespan=lifespan,
 )

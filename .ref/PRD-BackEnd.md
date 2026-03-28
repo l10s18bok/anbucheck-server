@@ -1,4 +1,4 @@
-# 생존확인 앱 - BackEnd PRD
+# 안부 확인 앱 - BackEnd PRD
 
 
 ## 1. 개요
@@ -16,16 +16,16 @@
 
 
 ### 1.2 목적
-스마트폰 사용 패턴을 기반으로 사용자의 생존 여부를 자동 감지하는 크로스 플랫폼(Android/iOS) 시스템의 서버 측 설계.
+스마트폰 사용 패턴을 기반으로 사용자의 안녕을 자동으로 확인하는 크로스 플랫폼(Android/iOS) 시스템의 서버 측 설계.
 클라이언트로부터 heartbeat를 수신하고, 매일 고정 시각(기본 09:30) + 2시간 내 미수신 시 보호자에게 FCM Push 경고를 발송하며, iOS 기기에 매일 고정 시각에 Silent Push를 발송하는 역할을 담당한다.
 
 **기술 스택:** Python + FastAPI + SQLite + Railway
 
-**이 앱은 응급상황 알림 앱이 아니다.** 사용자의 일상적 생존 확인만을 목적으로 한다.
+**이 앱은 응급상황 알림 앱이 아니다.** 사용자의 일상적 안부 확인만을 목적으로 한다.
 
 
 ### 1.3 핵심 가치
-- **제로 인터랙션**: 사용자가 별도 조작 없이 자동으로 생존 상태를 보고
+- **제로 인터랙션**: 사용자가 별도 조작 없이 자동으로 안부 신호를 보고
 - **최소 배터리 소모**: 상시 백그라운드 실행 없이, OS 네이티브 메커니즘으로 매일 1회 확인
 - **신뢰성**: 거짓 경고(false alarm) 최소화
 - **크로스 플랫폼**: Android/iOS 동시 지원, 앱 심사 통과 용이한 설계
@@ -50,7 +50,7 @@
 ---
 
 
-## 2. 생존확인 아키텍처 (서버 관점)
+## 2. 안부 확인 아키텍처 (서버 관점)
 
 > 📊 **전체 플로우차트**: [heartbeat_flowchart.md](heartbeat_flowchart.md) 참조
 > - 차트 2: 서버 Heartbeat 수신 후 판정 플로우 (suspicious 판정, 경고 해소/하향)
@@ -71,7 +71,7 @@
 │  │             │  │ (APScheduler)│  │ (firebase-admin)   │  │
 │  │ · 사용자 등록│  │              │  │                    │  │
 │  │ · heartbeat │  │ · iOS Silent │  │ · Silent Push 발송 │  │
-│  │ · 대상자    │  │   Push 발송  │  │   (iOS 생존확인)   │  │
+│  │ · 대상자    │  │   Push 발송  │  │   (iOS 안부 확인)   │  │
 │  │   연결 관리 │  │   (매일 고정 │  │ · 일반 Push 발송   │  │
 │  │ · 구독 관리  │  │    시각)     │  │   (보호자 알림)    │  │
 │  │ · FCM 토큰  │  │ · 경고 생성  │  │                    │  │
@@ -199,25 +199,25 @@ heartbeat 수신 → last_seen 갱신
 
 // 주의 등급 — 미수신 또는 폰 미사용
 {
-  "notification": { "title": "⚠ 안부 확인", "body": "오늘 생존확인이 없습니다." },
+  "notification": { "title": "⚠ 안부 확인", "body": "오늘 안부 확인이 없습니다." },
   "data": { "type": "alert_caution", "subject_user_id": "1" }
 }
 
 // 경고 등급 — heartbeat 미수신
 {
-  "notification": { "title": "⚠ 안부 확인", "body": "대상자의 오늘 생존확인이 없습니다. 통신 불가 상태일 수 있습니다." },
+  "notification": { "title": "⚠ 안부 확인", "body": "대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다." },
   "data": { "type": "alert_warning", "subject_user_id": "1" }
 }
 
 // 긴급 등급 — 즉시 확인 필요
 {
-  "notification": { "title": "🚨 긴급: 대상자 확인 필요", "body": "생존확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다." },
+  "notification": { "title": "🚨 긴급: 대상자 확인 필요", "body": "안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다." },
   "data": { "type": "alert_urgent", "subject_user_id": "1" }
 }
 
 // 경고 자동 해소 (heartbeat 복구 시)
 {
-  "notification": { "title": "✅ 안부 확인", "body": "대상자의 생존확인이 정상 복귀되었습니다." },
+  "notification": { "title": "✅ 안부 확인", "body": "대상자의 안부 확인이 정상 복귀되었습니다." },
   "data": { "type": "alert_resolved", "subject_user_id": "1" }
 }
 ```
@@ -951,10 +951,10 @@ VALUES
       → heartbeat 수신 시 자동 해소
 
    b. 활성 경고 없음 (1회 미수신)
-      → 주의 등급: "오늘 생존확인이 없습니다" (1회 발송)
+      → 주의 등급: "오늘 안부 확인이 없습니다" (1회 발송)
 
    c. caution 활성 (2회 미수신)
-      → 경고 등급: "생존확인이 없습니다. 통신 불가 상태일 수 있습니다"
+      → 경고 등급: "안부 확인이 없습니다. 통신 불가 상태일 수 있습니다"
 
    d. warning 활성 (3회 이상 미수신)
       → 긴급 등급: "즉시 확인이 필요합니다"
@@ -1195,7 +1195,7 @@ Mount Path: /data
 | API | 메서드 | 용도 |
 |-----|--------|------|
 | `/api/v1/users` | POST | 사용자 등록 (대상자/보호자) |
-| `/api/v1/heartbeat` | POST | 생존확인 heartbeat 수신 |
+| `/api/v1/heartbeat` | POST | 안부 확인 heartbeat 수신 |
 | `/api/v1/subjects/link` | POST | 고유 코드로 대상자 연결 (보호자용) |
 | `/api/v1/subjects` | GET | 연결된 대상자 목록 조회 (보호자용) |
 | `/api/v1/subjects/{id}/unlink` | DELETE | 대상자 연결 해제 (보호자용) |
