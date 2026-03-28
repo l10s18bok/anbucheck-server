@@ -17,9 +17,9 @@
 
 ### 1.2 목적
 스마트폰 사용 패턴을 기반으로 사용자의 안녕을 자동으로 확인하는 크로스 플랫폼(Android/iOS) 시스템의 서버 측 설계.
-클라이언트로부터 heartbeat를 수신하고, 매일 고정 시각(기본 09:30) + 2시간 내 미수신 시 보호자에게 FCM Push 경고를 발송하며, iOS 기기에 매일 고정 시각에 Silent Push를 발송하는 역할을 담당한다.
+클라이언트로부터 heartbeat를 수신하고, 매일 고정 시각(기본 09:30) + 2시간 내 미수신 시 보호자에게 FCM Push 경고를 발송하며, Android/iOS 기기에 매일 고정 시각에 FCM Silent Push(heartbeat_trigger)를 발송하는 역할을 담당한다.
 
-**기술 스택:** Python + FastAPI + SQLite + Railway
+**기술 스택:** Python + FastAPI + PostgreSQL (asyncpg) + Railway
 
 **이 앱은 응급상황 알림 앱이 아니다.** 사용자의 일상적 안부 확인만을 목적으로 한다.
 
@@ -70,10 +70,11 @@
 │  │ API Router   │  │  Scheduler   │  │   Push Service     │  │
 │  │             │  │ (APScheduler)│  │ (firebase-admin)   │  │
 │  │ · 사용자 등록│  │              │  │                    │  │
-│  │ · heartbeat │  │ · iOS Silent │  │ · Silent Push 발송 │  │
-│  │ · 대상자    │  │   Push 발송  │  │   (iOS 안부 확인)   │  │
-│  │   연결 관리 │  │   (매일 고정 │  │ · 일반 Push 발송   │  │
-│  │ · 구독 관리  │  │    시각)     │  │   (보호자 알림)    │  │
+│  │ · heartbeat │  │ · heartbeat  │  │ · Silent Push 발송 │  │
+│  │ · 대상자    │  │   트리거 FCM │  │   (iOS/Android     │  │
+│  │   연결 관리 │  │   발송 (매일 │  │    heartbeat 트리거│  │
+│  │ · 구독 관리  │  │   고정 시각) │  │ · 일반 Push 발송   │  │
+│  │ · FCM 토큰  │  │ · 경고 생성  │  │   (보호자 알림)    │  │
 │  │ · FCM 토큰  │  │ · 경고 생성  │  │                    │  │
 │  │   갱신      │  │   (미수신 시) │  │                    │  │
 │  └──────┬──────┘  └──────┬───────┘  └─────────┬──────────┘  │
@@ -81,8 +82,8 @@
 │         └───────────────┼────────────────────┘              │
 │                         │                                   │
 │                  ┌──────▼───────┐                           │
-│                  │   SQLite      │                           │
-│                  │  (anbu.db)   │                           │
+│                  │  PostgreSQL   │                           │
+│                  │  (Railway)   │                           │
 │                  └──────────────┘                           │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -92,10 +93,11 @@
 
 | | Android 기기 | iOS 기기 |
 |--|-------------|----------|
-| heartbeat 트리거 | 클라이언트 WorkManager가 매일 고정 시각에 실행 | **서버가 매일 고정 시각에 Silent Push 발송** |
-| 서버 추가 작업 | 없음 (수신 대기만) | 기기별 고정 시각에 Silent Push 발송 필요 |
+| heartbeat 트리거 | **서버가 매일 고정 시각에 FCM Silent Push 발송** | **서버가 매일 고정 시각에 FCM Silent Push 발송** |
+| 서버 추가 작업 | 기기별 고정 시각에 heartbeat_trigger Push 발송 | 기기별 고정 시각에 heartbeat_trigger Push 발송 |
 | 확인 주기 | 매일 고정 시각 (기본 09:30) | 매일 고정 시각 (기본 09:30) |
-| 시각 변경 | 보호자 또는 대상자가 변경 가능 | 서버가 변경된 시각에 맞춰 Silent Push 발송 |
+| 시각 변경 | 서버가 변경된 시각에 맞춰 FCM Push 발송 | 서버가 변경된 시각에 맞춰 FCM Push 발송 |
+| 클라이언트 스케줄러 | 불필요 (WorkManager 제거) | 불필요 |
 
 
 ### 2.3 대상자-보호자 연결 메커니즘
@@ -147,20 +149,24 @@ guardians: { subject_user_id:1, guardian_user_id:2 }
 | 등급 | 조건 | 발송 |
 |------|------|------|
 | 🚨 긴급 | 경고 3회 이상 누적 | 매일 반복, 보호자 확인까지 종료 없음 |
-| ⚠ 경고 | 미수신 2회 이상 OR suspicious 2회 이상 | 1~2회 다음날 재발송 |
-| ⚠ 주의 | 미수신 1회 OR suspicious 1회 | 1회 발송 |
-| 🔵 정보 | 배터리 ≤ 10% (마지막 heartbeat 기준) | 1회 발송, 이후 상향 없음 |
+| ⚠ 경고 | 미수신 2회 이상 | 1~2회 다음날 재발송 |
+| ⚠ 주의 | 미수신 1회 | 1회 발송 |
+| 🔵 정보 | 배터리 ≤ 10% / 자동 heartbeat 정상 수신 / 정상복귀 / 수동 heartbeat | DND 적용 (시간 외 소리, 시간 내 조용) |
 
 ```
 [heartbeat 수신 시]
 heartbeat 수신 → last_seen 갱신
-  ├─ battery_level ≤ 10% + 기존 info 경고 없음 → 정보 등급 1회 발송
+  ├─ 오늘(KST) 이미 heartbeat 수신한 경우 → suspicious 강제 false (하루 첫 heartbeat만 판정)
+  ├─ battery_level ≤ 10% + 기존 info 경고 없음 → 정보 등급 1회 발송 (DND 적용)
   └─ suspicious 판정:
-      ├─ false → 활성 경고 완전 해소 + 보호자 Push "정상 복귀"
-      │          (info만 있으면 정상 복귀 알림 없음)
+      ├─ false → 활성 경고 해소 여부 확인
+      │   ├─ 활성 경고 있었음 → 완전 해소 + 보호자 Push "정상 복귀" (정보 등급 DND 적용)
+      │   └─ 활성 경고 없었음
+      │       ├─ manual = true  → 보호자 Push "수동 안부 확인" (정보 등급 DND 적용)
+      │       └─ manual = false → 보호자 Push "오늘 안부 확인 완료" (정보 등급 DND 적용)
       └─ true  → warning/urgent → caution 하향 (정상 복귀 알림 없음)
-          ├─ suspicious 1회 → 주의 등급 발생 (중복 생성 방지)
-          └─ suspicious 2회 이상 → 경고 등급 발생 (warning/urgent 없을 때만)
+               → 대상자에게 wellbeing_check 발송 (보호자 경고 없음)
+               → 보호자 경고는 heartbeat 미수신 시에만 발생
 
 [heartbeat 미수신 시 (기기별 고정 시각 + 2시간 경과 시 체크)]
 지정 시각 + 2시간 내 미수신 대상자 감지 (기본: 09:30 → 11:30 체크)
@@ -194,31 +200,43 @@ heartbeat 수신 → last_seen 갱신
 // 정보 등급 — 배터리 방전 추정
 {
   "notification": { "title": "🔋 배터리 방전 추정", "body": "대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 충전 후 자동으로 정상 복귀됩니다." },
-  "data": { "type": "alert_info", "reason": "battery_dead", "subject_user_id": "1" }
+  "data": { "type": "alert_info", "reason": "battery_dead", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
 }
 
-// 주의 등급 — 미수신 또는 폰 미사용
+// 주의 등급 — 예정 시각+2시간 초과 1회 미수신
 {
-  "notification": { "title": "⚠ 안부 확인", "body": "오늘 안부 확인이 없습니다." },
-  "data": { "type": "alert_caution", "subject_user_id": "1" }
+  "notification": { "title": "⚠ 안부 확인 필요", "body": "오늘 대상자의 안부 확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다." },
+  "data": { "type": "alert_caution", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
 }
 
 // 경고 등급 — heartbeat 미수신
 {
   "notification": { "title": "⚠ 안부 확인", "body": "대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다." },
-  "data": { "type": "alert_warning", "subject_user_id": "1" }
+  "data": { "type": "alert_warning", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
 }
 
 // 긴급 등급 — 즉시 확인 필요
 {
   "notification": { "title": "🚨 긴급: 대상자 확인 필요", "body": "안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다." },
-  "data": { "type": "alert_urgent", "subject_user_id": "1" }
+  "data": { "type": "alert_urgent", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
 }
 
-// 경고 자동 해소 (heartbeat 복구 시)
+// 정보 등급 — 자동 heartbeat 정상 수신
+{
+  "notification": { "title": "✅ 오늘 안부 확인 완료", "body": "대상자의 오늘 안부 확인이 정상 수신되었습니다." },
+  "data": { "type": "auto_report", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
+}
+
+// 정보 등급 — 수동 안부 확인
+{
+  "notification": { "title": "✅ 수동 안부 확인", "body": "대상자께서 직접 안부 확인을 보냈습니다." },
+  "data": { "type": "manual_report", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
+}
+
+// 정보 등급 — 경고 자동 해소 (heartbeat 복구 시)
 {
   "notification": { "title": "✅ 안부 확인", "body": "대상자의 안부 확인이 정상 복귀되었습니다." },
-  "data": { "type": "alert_resolved", "subject_user_id": "1" }
+  "data": { "type": "alert_resolved", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
 }
 ```
 - 서버에 이름이 없으므로 Push 본문에 "대상자"로 표시
@@ -234,7 +252,7 @@ heartbeat 수신 → last_seen 갱신
 server/
 ├── main.py                         # 엔트리포인트 (FastAPI 앱 생성 + uvicorn 실행)
 ├── config.py                       # 환경변수 기반 설정
-├── database.py                     # SQLite 연결 + 테이블 초기화
+├── database.py                     # PostgreSQL 연결 풀 (asyncpg) + 테이블 초기화
 ├── routers/
 │   ├── user.py                     # POST /api/v1/users (사용자 등록)
 │   ├── heartbeat.py                # POST /api/v1/heartbeat
@@ -260,7 +278,6 @@ server/
 │   └── subscription.py
 ├── middleware/
 │   └── auth.py                     # device_token 기반 인증 (FastAPI Depends)
-├── anbu.db                         # SQLite 데이터베이스 파일 (자동 생성)
 ├── requirements.txt                # Python 패키지 목록
 ├── Procfile                        # Railway 배포용 (web: uvicorn main:app)
 └── firebase-service-account.json   # FCM 인증 키 (환경변수로 대체 가능)
@@ -407,16 +424,11 @@ Body:
 {
   "device_id": "uuid-v4",
   "timestamp": "2026-03-18T14:32:00+09:00",
-  "source": "workmanager | silent_push | foreground",
-  "accel_x": 0.12,
-  "accel_y": 9.78,
-  "accel_z": 0.34,
-  "gyro_x": 0.01,
-  "gyro_y": 0.02,
-  "gyro_z": 0.00,
+  "steps_delta": 342,
   "suspicious": false,
   "battery_level": 85
 }
+// steps_delta: 이전 heartbeat 이후 걸음수 증가량 (권한 거부 시 null)
 Response: 200 OK
 {
   "status": "ok",
@@ -431,8 +443,11 @@ Response: 200 OK
 - 대상자는 구독과 무관하게 항상 heartbeat 전송 (구독은 보호자가 관리)
 - 보호자 구독이 만료된 경우, heartbeat는 수신하되 보호자에게 경고/알림을 발송하지 않음
 - **서버 판정 로직** (상세: [heartbeat_flowchart.md](heartbeat_flowchart.md) 차트 2):
-  - `battery_level` ≤ 10% + 기존 info 경고 없으면 → 정보 등급 1회 발송 (중복 방지)
-  - `suspicious` = false → 활성 경고 완전 해소 + 보호자 Push "정상 복귀" (info만 있으면 알림 없음)
+  - `battery_level` ≤ 10% + 기존 info 경고 없으면 → 정보 등급 1회 발송 (중복 방지, DND 적용)
+  - `suspicious` = false:
+    - 활성 경고 있으면 → 완전 해소 + 보호자 Push "정상 복귀" (정보 등급 DND 적용)
+    - 활성 경고 없고 `manual` = true → 보호자 Push "수동 안부 확인" (정보 등급 DND 적용)
+    - 활성 경고 없고 `manual` = false → 보호자 Push "오늘 안부 확인 완료" (정보 등급 DND 적용)
   - `suspicious` = true → warning/urgent 경고를 caution으로 하향 (정상 복귀 알림 없음)
     - 1회 → 주의 등급 발생 (caution 중복 방지)
     - 2회 이상 → 경고 등급 발생 (warning/urgent 없을 때만)
@@ -742,20 +757,20 @@ Response: 200 OK
 ---
 
 
-## 5. DB 스키마 (SQLite)
+## 5. DB 스키마 (PostgreSQL)
 
-**파일**: `anbu.db` (서버와 같은 디렉토리, 자동 생성)
+**DB**: Railway 제공 PostgreSQL (asyncpg 비동기 드라이버 사용)
 
 ```sql
 -- 사용자 테이블 (개인정보 미포함)
 CREATE TABLE IF NOT EXISTS users (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              SERIAL PRIMARY KEY,
     role            TEXT NOT NULL DEFAULT 'subject',
                     -- 'subject' (대상자) 또는 'guardian' (보호자)
     invite_code     TEXT UNIQUE,                       -- 대상자 고유 코드 (보호자는 NULL)
     device_token    TEXT NOT NULL UNIQUE,               -- API 인증용 Bearer 토큰 (무제한)
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_role ON users (role);
@@ -763,26 +778,21 @@ CREATE INDEX IF NOT EXISTS idx_users_role ON users (role);
 
 -- 기기 테이블
 CREATE TABLE IF NOT EXISTS devices (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              SERIAL PRIMARY KEY,
     user_id         INTEGER NOT NULL REFERENCES users(id),
     device_id       TEXT NOT NULL UNIQUE,
     platform        TEXT NOT NULL,                     -- 'android' 또는 'ios'
     os_version      TEXT,
     fcm_token       TEXT,
-    accel_x         REAL,                              -- 마지막 가속도 센서 x (m/s²)
-    accel_y         REAL,                              -- 마지막 가속도 센서 y
-    accel_z         REAL,                              -- 마지막 가속도 센서 z
-    gyro_x          REAL,                              -- 마지막 자이로 센서 x (rad/s)
-    gyro_y          REAL,                              -- 마지막 자이로 센서 y
-    gyro_z          REAL,                              -- 마지막 자이로 센서 z
+    steps_delta     INTEGER,                           -- 마지막 heartbeat 이후 걸음수 증가량 (권한 거부 시 NULL)
     battery_level   INTEGER,                           -- 마지막 배터리 잔량 (0~100)
     suspicious_count INTEGER DEFAULT 0,                -- 연속 suspicious 횟수
     heartbeat_hour  INTEGER NOT NULL DEFAULT 9,        -- heartbeat 시각 (시, 0~23, 기본 9)
     heartbeat_minute INTEGER NOT NULL DEFAULT 30,      -- heartbeat 시각 (분, 0~59, 기본 30)
     timezone        TEXT NOT NULL DEFAULT 'Asia/Seoul', -- 기기 시간대 (IANA timezone)
-    last_seen       TEXT NOT NULL DEFAULT (datetime('now')),
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_devices_user ON devices (user_id);
@@ -807,17 +817,17 @@ CREATE INDEX IF NOT EXISTS idx_guardians_guardian ON guardians (guardian_user_id
 -- 구독 테이블 (보호자만 보유, 대상자는 구독 없음)
 -- 단일 상품: anbu_yearly ($9.99/년), 대상자 최대 5명, 티어 없음
 CREATE TABLE IF NOT EXISTS subscriptions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              SERIAL PRIMARY KEY,
     user_id         INTEGER NOT NULL REFERENCES users(id),
                     -- 보호자 user_id만 참조
     plan            TEXT NOT NULL DEFAULT 'free_trial',
                     -- free_trial, yearly, expired
-    started_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at      TEXT NOT NULL,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
     receipt_data    TEXT,                             -- 인앱 결제 영수증
     platform        TEXT,                            -- 결제 플랫폼 (android/ios)
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions (user_id);
@@ -826,7 +836,7 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_expires ON subscriptions (expires_a
 
 -- 경고 테이블
 CREATE TABLE IF NOT EXISTS alerts (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                  SERIAL PRIMARY KEY,
     subject_user_id     INTEGER NOT NULL REFERENCES users(id),
     alert_level         TEXT NOT NULL DEFAULT 'warning',
                         -- info, caution, warning, urgent
@@ -834,12 +844,12 @@ CREATE TABLE IF NOT EXISTS alerts (
                         -- active, resolved, false_alarm
                         -- cleared/resolved/false_alarm 확정 시 행 즉시 삭제 (이력 미보관)
     days_inactive       INTEGER NOT NULL DEFAULT 1,
-    last_seen_at        TEXT NOT NULL,
-    push_pending        INTEGER NOT NULL DEFAULT 0,    -- 발송 시간대 외 보류 플래그 (0/1)
-    last_push_at        TEXT,                          -- 마지막 Push 발송 시각
-    resolved_at         TEXT,
+    last_seen_at        TIMESTAMPTZ NOT NULL,
+    push_pending        BOOLEAN NOT NULL DEFAULT FALSE,    -- 발송 시간대 외 보류 플래그
+    last_push_at        TIMESTAMPTZ,                       -- 마지막 Push 발송 시각
+    resolved_at         TIMESTAMPTZ,
     note                TEXT,
-    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts (status);
@@ -848,19 +858,13 @@ CREATE INDEX IF NOT EXISTS idx_alerts_subject ON alerts (subject_user_id, create
 
 -- Heartbeat 로그 (감사/디버깅용)
 CREATE TABLE IF NOT EXISTS heartbeat_logs (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              SERIAL PRIMARY KEY,
     device_id       TEXT NOT NULL,
-    source          TEXT,                              -- workmanager, silent_push, foreground
-    accel_x         REAL,
-    accel_y         REAL,
-    accel_z         REAL,
-    gyro_x          REAL,
-    gyro_y          REAL,
-    gyro_z          REAL,
-    suspicious      INTEGER DEFAULT 0,                 -- 센서 변화량 미달 (0/1)
+    steps_delta     INTEGER,                           -- heartbeat 이후 걸음수 증가량 (권한 거부 시 NULL)
+    suspicious      INTEGER DEFAULT 0,                 -- 활동 지표 미달 (0/1)
     battery_level   INTEGER,
-    client_ts       TEXT NOT NULL,
-    server_ts       TEXT NOT NULL DEFAULT (datetime('now'))
+    client_ts       TIMESTAMPTZ NOT NULL,
+    server_ts       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- 30일 보관 후 삭제 정책 권장
@@ -873,23 +877,23 @@ CREATE TABLE IF NOT EXISTS app_versions (
     latest_version  TEXT NOT NULL,                         -- 최신 배포 버전
     min_version     TEXT NOT NULL,                         -- 강제 업데이트 기준 버전 (미만이면 차단)
     store_url       TEXT NOT NULL,                         -- 플랫폼별 스토어 URL
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- 초기 데이터
-INSERT OR IGNORE INTO app_versions (platform, latest_version, min_version, store_url)
+INSERT INTO app_versions (platform, latest_version, min_version, store_url)
 VALUES
   ('android', '1.0.0', '1.0.0', 'https://play.google.com/store/apps/details?id=com.anbu.app'),
-  ('ios', '1.0.0', '1.0.0', 'https://apps.apple.com/app/id000000000');
+  ('ios', '1.0.0', '1.0.0', 'https://apps.apple.com/app/id000000000')
+ON CONFLICT (platform) DO NOTHING;
 ```
 
-**SQLite 참고사항:**
-- `BOOLEAN` → SQLite는 `INTEGER` (0/1)로 저장
-- `TIMESTAMPTZ` → `TEXT`로 저장 (ISO 8601 형식: `2026-03-19T14:32:00`)
-- `SERIAL` → `INTEGER PRIMARY KEY AUTOINCREMENT`
-- `UUID` → `TEXT`로 저장
-- WAL 모드 활성화 권장: `PRAGMA journal_mode=WAL;` (동시 읽기 성능 향상)
-- 서버 시작 시 `PRAGMA foreign_keys=ON;` 설정 필요 (SQLite 기본값은 OFF)
+**PostgreSQL 참고사항:**
+- `BOOLEAN` → 네이티브 타입 사용 (`TRUE`/`FALSE`)
+- `TIMESTAMPTZ` → 타임존 포함 타임스탬프 (UTC 저장, 조회 시 KST 변환)
+- `SERIAL` → 자동 증가 정수 (PostgreSQL 시퀀스)
+- asyncpg 비동기 드라이버 사용 (`$1`, `$2` 파라미터 바인딩)
+- Railway PostgreSQL 플러그인으로 배포 시 DB 영구 보존 (Volume 불필요)
 
 
 ---
@@ -898,26 +902,27 @@ VALUES
 ## 6. 서버 스케줄러
 
 
-### 6.1 iOS Silent Push 발송 (매일 고정 시각)
+### 6.1 iOS/Android Silent Push 발송 (매일 고정 시각)
 ```
-실행 주기: 매 1분 (APScheduler interval trigger)
+실행 주기: 매 분 정각 (APScheduler CronTrigger(second=0))
 
 처리 흐름:
-1. 현재 시각이 각 기기의 heartbeat 시각(heartbeat_hour:heartbeat_minute)에
-   해당하는 iOS 기기 조회
-   SELECT d.device_id, d.fcm_token
+1. 현재 시각(KST)이 각 기기의 heartbeat 시각(heartbeat_hour:heartbeat_minute)에
+   해당하는 대상자 기기 조회 (iOS/Android 공통)
+   SELECT d.fcm_token, d.device_id, d.platform
    FROM devices d
    JOIN users u ON d.user_id = u.id
    WHERE u.role = 'subject'
-     AND d.platform = 'ios'
      AND d.heartbeat_hour = :current_hour
      AND d.heartbeat_minute = :current_minute
+     AND d.fcm_token IS NOT NULL
 
-2. 조회된 각 iOS 기기에 Silent Push 발송
-   { "aps": { "content-available": 1 }, "type": "heartbeat_check" }
+2. 조회된 각 기기에 Silent Push 발송 (type: heartbeat_trigger)
+3. FCM 토큰 무효화 시 해당 기기의 fcm_token을 NULL로 갱신
 
-※ 기본값: heartbeat_hour=9, heartbeat_minute=30 (로컬 시간대 기준)
+※ 기본값: heartbeat_hour=9, heartbeat_minute=30 (KST 기준)
 ※ 보호자/대상자가 시각 변경 시 devices 테이블의 heartbeat_hour/minute 갱신
+※ CronTrigger(second=0): 매 분 0초에 실행 — 서버 재시작 후에도 정각에 동기화됨
 ```
 
 
@@ -926,7 +931,7 @@ VALUES
 > 📊 상세 플로우차트: [heartbeat_flowchart.md](heartbeat_flowchart.md) — 차트 3 참조
 
 ```
-실행 주기: 매 1분 (APScheduler interval trigger)
+실행 주기: 매 분 정각 (APScheduler CronTrigger(second=0))
 
 처리 흐름:
 1. 현재 시각이 heartbeat 시각 + 2시간에 해당하는 기기 중
@@ -1103,7 +1108,7 @@ VALUES
 |--------|------|
 | `fastapi` | 웹 프레임워크 (API 자동 문서화, Swagger UI) |
 | `uvicorn` | ASGI 서버 (FastAPI 실행) |
-| `aiosqlite` | SQLite 비동기 드라이버 |
+| `asyncpg` | PostgreSQL 비동기 드라이버 |
 | `apscheduler` | 스케줄러 (Silent Push, 경고 체크, 구독 만료) |
 | `firebase-admin` | FCM/APNs Push 발송 (Silent Push + 일반 Push) |
 | `pydantic` | 요청/응답 데이터 검증 (FastAPI 내장) |
@@ -1130,7 +1135,7 @@ python-dotenv==1.1.*
 
 | 구성요소 | 서비스 | 비고 |
 |----------|--------|------|
-| **Python 서버 + SQLite** | Railway | Git push 자동 배포, HTTPS 자동, 월 $1~5 |
+| **Python 서버 + PostgreSQL** | Railway | Git push 자동 배포, HTTPS 자동, PostgreSQL 플러그인 포함 월 $5~10 |
 | **Push** | FCM (Firebase Cloud Messaging) | Silent Push + 일반 Push, 무제한 무료 |
 
 
@@ -1159,27 +1164,20 @@ web: uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
 
-### 10.3 데이터베이스 (SQLite)
-- **파일**: `anbu.db` (서버와 같은 디렉토리)
-- **용량 제한**: 사실상 없음 (Railway 디스크 1GB 제공)
-- **백업**: Railway Volume에 저장, 수동 다운로드 가능
+### 10.3 데이터베이스 (PostgreSQL)
+- **서비스**: Railway PostgreSQL 플러그인
+- **드라이버**: asyncpg (비동기)
+- **연결**: 환경변수 `DATABASE_URL` (Railway가 자동 주입)
+- **영구 보존**: Railway PostgreSQL은 배포 시 데이터 유지 (Volume 불필요)
+- **백업**: Railway 대시보드에서 수동 백업 가능
 - **용량 관리**: `heartbeat_logs` 테이블 30일 보관 후 자동 삭제 (스케줄러)
-- **주의**: Railway는 기본적으로 배포 시 파일이 초기화됨
-  → **Railway Volume** 설정으로 `anbu.db` 영구 보존 필요
-
-**Railway Volume 설정:**
-```
-Railway 대시보드 → Service → Settings → Volumes
-Mount Path: /data
-→ SQLite 파일 경로: /data/anbu.db
-```
 
 
 ### 10.4 비용 요약
 
 | 항목 | 월 비용 |
 |------|---------|
-| Python 서버 + SQLite (Railway) | **$1~5** (사용량 기반) |
+| Python 서버 + PostgreSQL (Railway) | **$5~10** (PostgreSQL 플러그인 포함) |
 | FCM | **무료** |
 | 도메인 | 연 11,000원 (~$8) |
 | **합계** | **약 $2~6/월** |
@@ -1239,7 +1237,7 @@ Mount Path: /data
 - **통계/리포트**: 주간/월간 활동 리포트 생성
 - **다중 기기 통합**: 동일 사용자의 여러 기기를 하나의 프로필로 묶기
 - **관리자 대시보드 API**: 웹 기반 관리자 화면용 API 확장
-- **DB 마이그레이션**: 사용자 폭증 시 SQLite → PostgreSQL 전환 (SQL 문법 차이 최소)
+- **DB 스케일업**: 사용자 폭증 시 Railway PostgreSQL 플랜 업그레이드
 
 
 ---
@@ -1249,7 +1247,7 @@ Mount Path: /data
 
 | 단계 | 산출물 |
 |------|--------|
-| 1단계: DB + 사용자 등록/연결 API | FastAPI 서버, SQLite 스키마, 사용자 등록, 고유 코드 생성, 대상자 연결 API |
+| 1단계: DB + 사용자 등록/연결 API | FastAPI 서버, PostgreSQL 스키마, 사용자 등록, 고유 코드 생성, 대상자 연결 API |
 | 2단계: Heartbeat + 경고 | heartbeat 수신, 경고 생성/클리어 로직 |
 | 3단계: Push 서비스 | Silent Push 발송, 보호자 FCM Push 발송 |
 | 4단계: 스케줄러 | APScheduler — iOS Silent Push 주기, 경고 체크, 구독 만료 체크 |

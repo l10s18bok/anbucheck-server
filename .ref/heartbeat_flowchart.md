@@ -5,8 +5,8 @@
 | 등급 | 조건 | 발송 |
 |------|------|------|
 | 🚨 긴급 | 경고 3회 이상 누적 | 매일 반복, 보호자 확인까지 종료 없음 |
-| ⚠ 경고 | 미수신 2회 이상 OR suspicious 2회 이상 | 1~2회 다음날 재발송 |
-| ⚠ 주의 | 미수신 1회 OR suspicious 1회 | 1회 발송 |
+| ⚠ 경고 | 미수신 2회 이상 | 1~2회 다음날 재발송 |
+| ⚠ 주의 | 미수신 1회 | 1회 발송 |
 | 🔵 정보 | 배터리 ≤ 10% (마지막 heartbeat 기준) | 1회 발송, 이후 상향 없음 |
 
 
@@ -26,27 +26,28 @@ flowchart TD
     Start --> Trigger
 
     Trigger{트리거 종류?}
-    Trigger -->|Android 고정 시각| WM[WorkManager<br/>매일 고정 시각<br/>기본 09:30]
-    Trigger -->|iOS 고정 시각| SP[Silent Push 수신 시도<br/>서버가 고정 시각에 발송<br/>기본 09:30]
+    Trigger -->|고정 시각 Android/iOS| SP[서버 FCM Silent Push 수신<br/>type: heartbeat_trigger<br/>매 1분 스케줄러가 지정 시각에 발송]
     Trigger -->|공통| FG[앱 포그라운드 진입<br/>사용자가 직접 앱 실행 시]
 
     FG --> FGCollect[센서 스냅샷 로컬 저장만<br/>서버 전송 없음]
     FGCollect --> End0([종료])
 
     SP --> SPState{앱 상태?}
-    SPState -->|백그라운드 suspended| Collect
-    SPState -->|앱 완전 종료 killed| SPKilled[처리 불가<br/>서버: heartbeat 미수신으로 처리<br/>→ 차트 3 참조]
-    SPKilled --> End3([종료 — 서버가 보호자에게 알림 발송])
-
-    WM --> Collect
+    SPState -->|포그라운드/백그라운드| Collect
+    SPState -->|앱 완전 종료 killed| SPKilled[Google Play Services가<br/>FCM 수신 후 새 isolate 생성<br/>→ 백그라운드 핸들러 실행]
+    SPKilled --> Collect
 
     Collect[데이터 수집]
-    Collect --> Sensor[센서 스냅샷 조회<br/>가속도계 x,y,z<br/>자이로스코프 x,y,z]
+    Collect --> Steps[걸음수 조회<br/>pedometer<br/>steps_delta]
     Collect --> Battery[배터리 상태 조회<br/>battery_level]
 
+    Steps --> StepsCheck{steps_delta > 0?}
+    StepsCheck -->|YES| Normal[suspicious = false<br/>활동 확인]
+    StepsCheck -->|NO| Sensor[가속도/자이로 조회<br/>sensors_plus]
+
     Sensor --> Compare{이전 센서 값과 비교}
-    Compare -->|가속도 변화 < 5.0 m/s²<br/>AND 자이로 변화 < 0.3 rad/s| Suspicious[suspicious = true<br/>폰 미사용 의심]
-    Compare -->|가속도 변화 ≥ 5.0 m/s²<br/>OR 자이로 변화 ≥ 0.3 rad/s| Normal[suspicious = false<br/>폰 사용 확인]
+    Compare -->|가속도 변화 < 5.0 m/s²<br/>AND 자이로 변화 < 0.3 rad/s| Suspicious[suspicious = true<br/>활동 의심]
+    Compare -->|가속도 변화 ≥ 5.0 m/s²<br/>OR 자이로 변화 ≥ 0.3 rad/s| Normal
 
     Battery --> BattCheck{배터리 ≤ 20%?}
     BattCheck -->|YES| SubjectNoti[대상자 로컬 알림<br/>📱 충전이 필요합니다<br/>배터리가 부족합니다<br/>충전하지 않으면 안부 확인이<br/>중단될 수 있습니다]
@@ -83,7 +84,13 @@ flowchart TD
     Receive([서버: heartbeat 수신])
     Receive --> UpdateLastSeen[last_seen 갱신]
 
-    UpdateLastSeen --> BattCheck{battery_level ≤ 10%?}
+    UpdateLastSeen --> TodayCheck{오늘(KST) 이미<br/>heartbeat 수신 여부?}
+    TodayCheck -->|이미 수신 + suspicious=true| ForceNormal[suspicious 강제 false<br/>하루 첫 heartbeat에서만 판정]
+    TodayCheck -->|첫 heartbeat| BattCheck
+
+    ForceNormal --> BattCheck
+
+    BattCheck{battery_level ≤ 10%?}
     BattCheck -->|YES| BattNoti[🔵 정보 등급<br/>보호자 Push 알림 소리 없음<br/>🔋 배터리 부족<br/>충전이 필요합니다]
     BattCheck -->|NO| AlertActive
     BattNoti --> AlertActive
@@ -96,16 +103,11 @@ flowchart TD
 
     AlertActive -->|NO| CheckSuspicious{suspicious?}
     Resolve --> StatusNormal([✅ 정상<br/>센서 움직임 감지 — 사용 확인])
-    Downgrade --> ConsecutiveCheck
+    Downgrade --> WellbeingCheck
 
     CheckSuspicious -->|false| StatusNormal
-    CheckSuspicious -->|true| ConsecutiveCheck{연속<br/>suspicious 횟수?}
-
-    ConsecutiveCheck -->|1회| Caution1[⚠ 주의 등급 발생<br/>보호자 Push 알림]
-    Caution1 --> Wait1([⏱ 다음 heartbeat 대기])
-
-    ConsecutiveCheck -->|2회 이상| Warning2[⚠ 경고 등급 발생<br/>보호자 Push 알림]
-    Warning2 --> Wait2([⏱ 다음 heartbeat 대기])
+    CheckSuspicious -->|true| WellbeingCheck[대상자에게 wellbeing_check 발송<br/>📱 안부를 확인해 주세요<br/>보호자 경고 없음]
+    WellbeingCheck --> Wait1([⏱ 다음 heartbeat 대기<br/>보호자 경고는 미수신 시에만 발생])
 ```
 
 
@@ -113,7 +115,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Scheduler([서버: 각 기기의<br/>heartbeat 시각 + 2시간 경과 확인<br/>기본 09:30 → 11:30 체크])
+    Scheduler([서버 APScheduler: 매 분 정각 실행<br/>CronTrigger(second=0)<br/>① heartbeat_trigger FCM 발송 (지정 시각)<br/>② heartbeat 시각 + 2시간 경과 시 미수신 체크])
     Scheduler --> FindMissing[해당 시각까지<br/>heartbeat 미수신 대상자 조회]
 
     FindMissing --> SubActive{보호자<br/>구독 활성?}
@@ -155,12 +157,12 @@ flowchart TD
 ```mermaid
 flowchart LR
     Normal([🟢 정상<br/>매일 고정 시각<br/>기본 09:30])
-    Caution([🟡 주의<br/>suspicious 1회 또는 미수신 1회])
-    Warning([🔴 경고<br/>suspicious 2회 이상 또는 미수신 2회 이상])
+    Caution([🟡 주의<br/>미수신 1회])
+    Warning([🔴 경고<br/>미수신 2회 이상])
     Urgent([⬛ 긴급<br/>경고 3회 이상 누적])
 
-    Normal -->|suspicious 1회 또는 미수신 1회| Caution
-    Caution -->|suspicious 2회 이상 또는 미수신 2회| Warning
+    Normal -->|미수신 1회| Caution
+    Caution -->|미수신 2회| Warning
     Warning -->|3회 이상 누적| Urgent
     Caution -->|정상 heartbeat 수신| Normal
     Warning -->|정상 heartbeat 수신| Normal
@@ -177,12 +179,10 @@ flowchart TD
 
     subgraph 경고등급[⚠ 경고 — 1~2회 다음날 재발송]
         W1[미수신 2회 이상]
-        W2[suspicious 2회 이상 — heartbeat는 수신됨]
     end
 
     subgraph 주의등급[⚠ 주의 — 1회 발송]
         C1[미수신 1회]
-        C2[suspicious 1회 — heartbeat는 수신됨]
     end
 
     subgraph 정보등급[🔵 정보 — 소리 없음, 1회 발송, 이후 상향 없음]
