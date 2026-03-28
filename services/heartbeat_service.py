@@ -44,15 +44,13 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     await db.execute(
         """UPDATE devices SET
             last_seen = $1,
-            accel_x = $2, accel_y = $3, accel_z = $4,
-            gyro_x = $5, gyro_y = $6, gyro_z = $7,
-            battery_level = $8,
-            suspicious_count = $9,
-            updated_at = $10
-           WHERE user_id = $11 AND device_id = $12""",
+            steps_delta = $2,
+            battery_level = $3,
+            suspicious_count = $4,
+            updated_at = $5
+           WHERE user_id = $6 AND device_id = $7""",
         now_dt,
-        payload.get("accel_x"), payload.get("accel_y"), payload.get("accel_z"),
-        payload.get("gyro_x"), payload.get("gyro_y"), payload.get("gyro_z"),
+        payload.get("steps_delta"),
         battery_level,
         new_suspicious_count,
         now_dt,
@@ -62,13 +60,10 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     # heartbeat_logs 기록
     await db.execute(
         """INSERT INTO heartbeat_logs
-           (device_id, accel_x, accel_y, accel_z,
-            gyro_x, gyro_y, gyro_z, suspicious, battery_level,
-            client_ts, server_ts)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
+           (device_id, steps_delta, suspicious, battery_level, client_ts, server_ts)
+           VALUES ($1, $2, $3, $4, $5, $6)""",
         device_id,
-        payload.get("accel_x"), payload.get("accel_y"), payload.get("accel_z"),
-        payload.get("gyro_x"), payload.get("gyro_y"), payload.get("gyro_z"),
+        payload.get("steps_delta"),
         int(suspicious),
         battery_level,
         payload["timestamp"],

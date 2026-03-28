@@ -6,12 +6,7 @@ class HeartbeatIn(BaseModel):
     device_id: str
     timestamp: str
     manual: bool = False
-    accel_x: Optional[float] = None
-    accel_y: Optional[float] = None
-    accel_z: Optional[float] = None
-    gyro_x: Optional[float] = None
-    gyro_y: Optional[float] = None
-    gyro_z: Optional[float] = None
+    steps_delta: Optional[int] = None  # 이전 heartbeat 이후 걸음수 증가량 (권한 거부 시 null)
     suspicious: bool
     battery_level: Optional[int] = None
 
