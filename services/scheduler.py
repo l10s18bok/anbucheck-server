@@ -42,7 +42,7 @@ async def job_heartbeat_trigger() -> None:
     from database import get_pool
     async with get_pool().acquire() as db:
         devices = await db.fetch(
-            """SELECT d.fcm_token, d.device_id, d.platform
+            """SELECT d.fcm_token, d.device_id, d.platform, u.invite_code
                FROM devices d
                JOIN users u ON d.user_id = u.id
                WHERE u.role = 'subject'
@@ -59,12 +59,16 @@ async def job_heartbeat_trigger() -> None:
         from services.push_service import push_heartbeat_trigger
         for dev in devices:
             token_invalid = await push_heartbeat_trigger(dev["fcm_token"], dev["platform"])
+            invite_code = dev["invite_code"] or "?"
             if token_invalid:
                 await db.execute(
                     "UPDATE devices SET fcm_token = NULL WHERE device_id = $1",
                     dev["device_id"],
                 )
-        logger.info(f"Heartbeat 트리거 발송: {len(devices)}대 (KST {current_hour:02d}:{current_minute:02d})")
+                logger.warning(f"[Heartbeat 트리거] FCM 토큰 무효 — 대상자 {invite_code} ({dev['platform']})")
+            else:
+                logger.info(f"[Heartbeat 트리거] 발송 완료 — 대상자 {invite_code} ({dev['platform']})")
+        logger.info(f"[Heartbeat 트리거] 총 {len(devices)}대 처리 완료 (KST {current_hour:02d}:{current_minute:02d})")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -281,8 +285,13 @@ async def job_cleanup_old_logs() -> None:
 
 def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(job_heartbeat_trigger, CronTrigger(second=0), id="heartbeat_trigger", replace_existing=True)
+    logger.info("스케줄러 등록: Heartbeat 트리거 — 매 분 정각 실행")
     scheduler.add_job(job_heartbeat_check, CronTrigger(second=0), id="heartbeat_check", replace_existing=True)
+    logger.info("스케줄러 등록: Heartbeat 미수신 체크 — 매 분 정각 실행")
     scheduler.add_job(job_subscription_expire_check, CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="sub_expire", replace_existing=True)
+    logger.info("스케줄러 등록: 구독 만료 체크 — 매일 00:00 KST")
     scheduler.add_job(job_cleanup_orphan_subjects, CronTrigger(hour=3, minute=0, timezone="Asia/Seoul"), id="cleanup_subjects", replace_existing=True)
+    logger.info("스케줄러 등록: 보호자 미연결 대상자 정리 — 매일 03:00 KST")
     scheduler.add_job(job_cleanup_old_logs, CronTrigger(hour=4, minute=0, timezone="Asia/Seoul"), id="cleanup_logs", replace_existing=True)
+    logger.info("스케줄러 등록: heartbeat_logs 30일 초과 삭제 — 매일 04:00 KST")
     return scheduler
