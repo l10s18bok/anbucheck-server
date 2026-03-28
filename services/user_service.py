@@ -21,6 +21,49 @@ def _generate_device_token() -> str:
 
 
 async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict:
+    # 동일 device_id가 이미 등록된 기기인지 확인
+    existing = await db.fetchrow(
+        """SELECT u.id, u.role, u.invite_code, u.device_token
+           FROM devices d
+           JOIN users u ON u.id = d.user_id
+           WHERE d.device_id = $1""",
+        device["device_id"],
+    )
+
+    if existing is not None:
+        # 기존 기기 재가입 — 새 device_token 발급 후 FCM 토큰만 갱신
+        new_token = _generate_device_token()
+        async with db.transaction():
+            await db.execute(
+                "UPDATE users SET device_token = $1, updated_at = NOW() WHERE id = $2",
+                new_token, existing["id"],
+            )
+            await db.execute(
+                "UPDATE devices SET fcm_token = $1, updated_at = NOW() WHERE device_id = $2",
+                device.get("fcm_token"), device["device_id"],
+            )
+
+        subscription = None
+        if existing["role"] == "guardian":
+            sub_row = await db.fetchrow(
+                "SELECT plan, expires_at FROM subscriptions WHERE user_id = $1 ORDER BY id DESC LIMIT 1",
+                existing["id"],
+            )
+            if sub_row:
+                subscription = {
+                    "plan": sub_row["plan"],
+                    "expires_at": sub_row["expires_at"].isoformat(),
+                    "is_active": sub_row["expires_at"] > datetime.now(timezone.utc),
+                }
+
+        return {
+            "user_id": existing["id"],
+            "device_token": new_token,
+            "invite_code": existing["invite_code"],
+            "subscription": subscription,
+        }
+
+    # 신규 가입
     device_token = _generate_device_token()
 
     invite_code: str | None = None
@@ -35,26 +78,16 @@ async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict
                 break
 
     async with db.transaction():
-        # users 레코드 생성
         user_id = await db.fetchval(
             "INSERT INTO users (role, invite_code, device_token) VALUES ($1, $2, $3) RETURNING id",
             role, invite_code, device_token,
         )
 
-        # devices 레코드 생성 (동일 device_id 재가입 시 기존 레코드 교체)
         await db.execute(
             """INSERT INTO devices
                (user_id, device_id, platform, os_version, fcm_token,
                 heartbeat_hour, heartbeat_minute)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)
-               ON CONFLICT (device_id) DO UPDATE SET
-                   user_id = EXCLUDED.user_id,
-                   platform = EXCLUDED.platform,
-                   os_version = EXCLUDED.os_version,
-                   fcm_token = EXCLUDED.fcm_token,
-                   heartbeat_hour = EXCLUDED.heartbeat_hour,
-                   heartbeat_minute = EXCLUDED.heartbeat_minute,
-                   updated_at = NOW()""",
+               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
             user_id,
             device["device_id"],
             device["platform"],
