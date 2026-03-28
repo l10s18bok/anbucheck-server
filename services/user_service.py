@@ -61,6 +61,8 @@ async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict
             "device_token": new_token,
             "invite_code": existing["invite_code"],
             "subscription": subscription,
+            # 요청한 role과 기존 role이 다를 때만 포함 → 앱이 다이얼로그 표시
+            "existing_role": existing["role"] if existing["role"] != role else None,
         }
 
     # 신규 가입

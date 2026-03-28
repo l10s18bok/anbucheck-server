@@ -25,3 +25,4 @@ class UserRegisterOut(BaseModel):
     device_token: str
     invite_code: Optional[str] = None
     subscription: Optional[SubscriptionOut] = None
+    existing_role: Optional[str] = None  # 재가입 시 기존 role (요청 role과 다를 때만 포함)
