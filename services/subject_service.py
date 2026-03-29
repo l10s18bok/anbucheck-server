@@ -98,14 +98,20 @@ async def get_subjects(db: asyncpg.Connection, guardian_user_id: int) -> dict:
 
 async def unlink_subject(db: asyncpg.Connection, guardian_id: int, guardian_user_id: int) -> None:
     row = await db.fetchrow(
-        "SELECT id FROM guardians WHERE id = $1 AND guardian_user_id = $2",
+        "SELECT id, subject_user_id FROM guardians WHERE id = $1 AND guardian_user_id = $2",
         guardian_id, guardian_user_id,
     )
 
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="연결된 대상자를 찾을 수 없습니다")
 
+    subject_user_id = row["subject_user_id"]
+
     await db.execute("DELETE FROM guardians WHERE id = $1", guardian_id)
+    await db.execute(
+        "DELETE FROM guardian_notifications WHERE guardian_user_id = $1 AND subject_user_id = $2",
+        guardian_user_id, subject_user_id,
+    )
 
 
 def _to_utc_str(dt) -> str | None:

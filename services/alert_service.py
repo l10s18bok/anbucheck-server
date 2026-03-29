@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone, timedelta
 import logging
 from typing import Optional
@@ -271,15 +272,19 @@ async def send_alert_to_guardians(
     invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", subject_user_id)
     invite_code = invite_row["invite_code"] if invite_row else None
 
-    for guardian in guardians:
-        token = guardian["fcm_token"]
+    def _make_push_coro(token: str):
         if alert_level == "info_battery_low":
-            await push_service.push_battery_low(token, subject_user_id, invite_code=invite_code)
-        elif alert_level == "info_battery_dead":
-            await push_service.push_battery_dead(token, subject_user_id, battery_level or 0, invite_code=invite_code)
-        elif alert_level == "caution":
-            await push_service.push_caution(token, subject_user_id, invite_code=invite_code)
-        elif alert_level == "warning":
-            await push_service.push_warning(token, subject_user_id, invite_code=invite_code)
-        elif alert_level == "urgent":
-            await push_service.push_urgent(token, subject_user_id, invite_code=invite_code)
+            return push_service.push_battery_low(token, subject_user_id, invite_code=invite_code)
+        if alert_level == "info_battery_dead":
+            return push_service.push_battery_dead(token, subject_user_id, battery_level or 0, invite_code=invite_code)
+        if alert_level == "caution":
+            return push_service.push_caution(token, subject_user_id, invite_code=invite_code)
+        if alert_level == "warning":
+            return push_service.push_warning(token, subject_user_id, invite_code=invite_code)
+        if alert_level == "urgent":
+            return push_service.push_urgent(token, subject_user_id, invite_code=invite_code)
+        return None
+
+    coros = [c for g in guardians if (c := _make_push_coro(g["fcm_token"])) is not None]
+    if coros:
+        await asyncio.gather(*coros, return_exceptions=True)

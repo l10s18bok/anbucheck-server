@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -58,9 +59,17 @@ async def job_heartbeat_trigger() -> None:
             return
 
         from services.push_service import push_heartbeat_trigger
-        for dev in devices:
-            token_invalid = await push_heartbeat_trigger(dev["fcm_token"], dev["platform"])
+
+        # FCM 병렬 발송 — asyncio.to_thread 기반으로 진짜 I/O 병렬 처리
+        results = await asyncio.gather(
+            *[push_heartbeat_trigger(dev["fcm_token"], dev["platform"]) for dev in devices],
+            return_exceptions=True,
+        )
+
+        # DB 업데이트는 같은 커넥션 재사용이므로 순차 처리
+        for dev, result in zip(devices, results):
             invite_code = dev["invite_code"] or "?"
+            token_invalid = result if isinstance(result, bool) else False
             if token_invalid:
                 await db.execute(
                     "UPDATE devices SET fcm_token = NULL WHERE device_id = $1",

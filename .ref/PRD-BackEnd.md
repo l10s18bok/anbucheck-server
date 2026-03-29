@@ -414,6 +414,19 @@ Response: 200 OK
 }
 ```
 
+**연결 해제 시 서버 삭제 정책:**
+
+| 테이블 | 처리 | 이유 |
+| ----------------------- | ------ | ------------------------------------------------- |
+| `guardians` | 삭제 | 보호자-대상자 연결 레코드 자체 |
+| `guardian_notifications`| 삭제 | 해당 `guardian_user_id + subject_user_id` 기준 삭제. 해제 후 과거 이력 불필요 |
+| `alerts` | **유지** | `subject_user_id` 기준 공유 데이터. 다른 보호자가 같은 대상자를 볼 수 있으므로 삭제 금지 |
+| `heartbeat_logs` | **유지** | 대상자 활동 로그. 연결 해제와 무관 |
+
+**재연결 시 동작:**
+- 동일 `invite_code`로 재연결 가능 (`users` 테이블의 대상자 계정은 유지됨)
+- 재연결 시 새 `guardian_id`가 발급되며 과거 `guardian_notifications` 이력은 없음 (새로 시작)
+
 
 ### 4.6 Heartbeat 수신
 ```
@@ -917,8 +930,10 @@ ON CONFLICT (platform) DO NOTHING;
      AND d.heartbeat_minute = :current_minute
      AND d.fcm_token IS NOT NULL
 
-2. 조회된 각 기기에 Silent Push 발송 (type: heartbeat_trigger)
-3. FCM 토큰 무효화 시 해당 기기의 fcm_token을 NULL로 갱신
+2. 조회된 기기 전체에 Silent Push 병렬 발송 (asyncio.gather + asyncio.to_thread)
+   - FCM firebase-admin SDK의 send()는 동기 블로킹 함수이므로 asyncio.to_thread로 스레드 풀에서 실행
+   - 모든 기기에 대한 FCM I/O를 동시에 처리하여 N건 순차 발송 대비 응답 시간 대폭 단축
+3. FCM 발송 결과 수집 후 토큰 무효화 기기 DB 업데이트 (순차 — 커넥션 공유)
 
 ※ 기본값: heartbeat_hour=9, heartbeat_minute=30 (KST 기준)
 ※ 보호자/대상자가 시각 변경 시 devices 테이블의 heartbeat_hour/minute 갱신
@@ -976,6 +991,11 @@ ON CONFLICT (platform) DO NOTHING;
    - 주의 등급: 1회 발송
    - 경고 등급: 1~2회 다음날 재발송 → 3회 이상 긴급 상향
    - 긴급 등급: 보호자 확인까지 매일 반복 (종료 없음)
+
+6. 보호자 Push 병렬 발송 (alert_service.send_alert_to_guardians):
+   - 경고 등급 판정 후 연결된 보호자 전체에 Push 발송 시 asyncio.gather 병렬 처리
+   - 각 보호자의 FCM 발송은 독립적이므로 완전 병렬화 가능
+   - DB 작업 없이 FCM I/O만 수행하는 함수이므로 커넥션 공유 문제 없음
 ```
 
 

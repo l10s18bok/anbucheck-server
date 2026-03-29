@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -61,7 +62,7 @@ async def push_heartbeat_trigger(fcm_token: str, platform: str) -> bool:
                 android=messaging.AndroidConfig(priority="high"),
                 token=fcm_token,
             )
-        messaging.send(message)
+        await asyncio.to_thread(messaging.send, message)
         return False  # 정상 발송 = 토큰 유효 (token_invalid = False)
     except Exception as e:
         logger.error(f"[Heartbeat 트리거] FCM 오류 → {platform} ({fcm_token[:10]}...): {e}")
@@ -97,7 +98,7 @@ async def send_push(
             ),
             token=fcm_token,
         )
-        messaging.send(message)
+        await asyncio.to_thread(messaging.send, message)
         logger.info(f"[보호자 알림] 발송 완료 → {title} ({fcm_token[:10]}...)")
         return True
     except Exception as e:
@@ -215,7 +216,7 @@ async def push_schedule_updated(fcm_token: str, hour: int, minute: int) -> bool:
             android=messaging.AndroidConfig(priority="high"),
             token=fcm_token,
         )
-        messaging.send(message)
+        await asyncio.to_thread(messaging.send, message)
         return True
     except Exception as e:
         logger.error(f"schedule_updated Silent Push 실패 ({fcm_token[:10]}...): {e}")
