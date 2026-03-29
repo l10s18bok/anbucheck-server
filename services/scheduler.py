@@ -2,6 +2,7 @@
 
 - 매 1분: Heartbeat 트리거 Silent Push 발송 (iOS/Android 공통)
 - 매 1분: heartbeat 미수신 경고 체크
+- 매일 00:00 KST: 당일 보호자 알림 자정 일괄 삭제
 - 매일 00:00 KST: 구독 만료 체크
 - 매일 03:00 KST: 보호자 미연결 대상자 정리
 - 매일 04:00 KST: 30일 초과 heartbeat_logs 삭제
@@ -141,6 +142,13 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
                 settings = await get_guardian_settings(db, g["guardian_user_id"])
                 if _can_send(settings, "info"):
                     await push_battery_dead(g["fcm_token"], user_id, battery_level, invite_code=invite_code)
+                    await db.execute(
+                        """INSERT INTO guardian_notifications
+                           (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
+                           VALUES ($1, $2, $3, 'info', '🔋 배터리 방전 추정',
+                                   '대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 충전 후 자동으로 정상 복귀됩니다.', TRUE)""",
+                        g["guardian_user_id"], user_id, invite_code,
+                    )
         return
 
     # 2. 누적 미수신 등급 판정
@@ -161,6 +169,13 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
             settings = await get_guardian_settings(db, g["guardian_user_id"])
             if _can_send(settings, "urgent"):
                 await push_urgent(g["fcm_token"], user_id, invite_code=invite_code)
+                await db.execute(
+                    """INSERT INTO guardian_notifications
+                       (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
+                       VALUES ($1, $2, $3, 'urgent', '🚨 긴급: 대상자 확인 필요',
+                               '안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.', TRUE)""",
+                    g["guardian_user_id"], user_id, invite_code,
+                )
 
     elif has_caution:
         # 2회 미수신 → 경고
@@ -169,6 +184,13 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
             settings = await get_guardian_settings(db, g["guardian_user_id"])
             if _can_send(settings, "warning"):
                 await push_warning(g["fcm_token"], user_id, invite_code=invite_code)
+                await db.execute(
+                    """INSERT INTO guardian_notifications
+                       (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
+                       VALUES ($1, $2, $3, 'warning', '⚠ 안부 확인',
+                               '대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다.', TRUE)""",
+                    g["guardian_user_id"], user_id, invite_code,
+                )
 
     else:
         # 1회 미수신 → 주의
@@ -177,6 +199,13 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
             settings = await get_guardian_settings(db, g["guardian_user_id"])
             if _can_send(settings, "caution"):
                 await push_caution(g["fcm_token"], user_id, invite_code=invite_code)
+                await db.execute(
+                    """INSERT INTO guardian_notifications
+                       (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
+                       VALUES ($1, $2, $3, 'caution', '⚠ 안부 확인 필요',
+                               '오늘 대상자의 안부 확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.', TRUE)""",
+                    g["guardian_user_id"], user_id, invite_code,
+                )
 
 
 async def _escalate_urgent_if_needed(
@@ -199,10 +228,33 @@ async def _escalate_urgent_if_needed(
         settings = await get_guardian_settings(db, g["guardian_user_id"])
         if _can_send(settings, "urgent"):
             await push_urgent_secondary(g["fcm_token"], user_id, invite_code=invite_code)
+            await db.execute(
+                """INSERT INTO guardian_notifications
+                   (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
+                   VALUES ($1, $2, $3, 'urgent', '🚨 긴급: 대상자 확인 필요',
+                           '안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.', TRUE)""",
+                g["guardian_user_id"], user_id, invite_code,
+            )
 
 
 # ─────────────────────────────────────────────────────────────
-# 3. 구독 만료 체크 (매일 00:00 KST)
+# 3. 당일 보호자 알림 자정 일괄 삭제 (매일 00:00 KST)
+# ─────────────────────────────────────────────────────────────
+
+async def job_cleanup_guardian_notifications() -> None:
+    from database import get_pool
+    async with get_pool().acquire() as db:
+        result = await db.execute(
+            """DELETE FROM guardian_notifications
+               WHERE created_at < date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'"""
+        )
+    # asyncpg DELETE 반환값: "DELETE N" 형식
+    deleted_count = result.split()[-1] if result else "0"
+    logger.info(f"[자정 알림 정리] 삭제 완료 — {deleted_count}건")
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. 구독 만료 체크 (매일 00:00 KST)
 # ─────────────────────────────────────────────────────────────
 
 async def job_subscription_expire_check() -> None:
@@ -233,7 +285,7 @@ async def job_subscription_expire_check() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# 4. 보호자 미연결 대상자 정리 (매일 03:00 KST)
+# 5. 보호자 미연결 대상자 정리 (매일 03:00 KST)
 # ─────────────────────────────────────────────────────────────
 
 async def job_cleanup_orphan_subjects() -> None:
@@ -267,7 +319,7 @@ async def job_cleanup_orphan_subjects() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# 5. heartbeat_logs 30일 초과 삭제 (매일 04:00 KST)
+# 6. heartbeat_logs 30일 초과 삭제 (매일 04:00 KST)
 # ─────────────────────────────────────────────────────────────
 
 async def job_cleanup_old_logs() -> None:
@@ -288,6 +340,8 @@ def setup_scheduler() -> AsyncIOScheduler:
     logger.info("스케줄러 등록: Heartbeat 트리거 — 매 분 정각 실행")
     scheduler.add_job(job_heartbeat_check, CronTrigger(second=0), id="heartbeat_check", replace_existing=True)
     logger.info("스케줄러 등록: Heartbeat 미수신 체크 — 매 분 정각 실행")
+    scheduler.add_job(job_cleanup_guardian_notifications, CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="cleanup_guardian_noti", replace_existing=True)
+    logger.info("스케줄러 등록: 보호자 알림 자정 정리 — 매일 00:00 KST")
     scheduler.add_job(job_subscription_expire_check, CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="sub_expire", replace_existing=True)
     logger.info("스케줄러 등록: 구독 만료 체크 — 매일 00:00 KST")
     scheduler.add_job(job_cleanup_orphan_subjects, CronTrigger(hour=3, minute=0, timezone="Asia/Seoul"), id="cleanup_subjects", replace_existing=True)

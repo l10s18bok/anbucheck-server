@@ -16,7 +16,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
 
     # 기기 정보 조회
     device = await db.fetchrow(
-        "SELECT id, suspicious_count, heartbeat_hour, heartbeat_minute, last_seen FROM devices WHERE user_id = $1 AND device_id = $2",
+        "SELECT id, suspicious_count, heartbeat_hour, heartbeat_minute, last_seen, last_steps FROM devices WHERE user_id = $1 AND device_id = $2",
         user_id, device_id,
     )
 
@@ -41,6 +41,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
 
     # devices 테이블 갱신
     new_suspicious_count = device["suspicious_count"] + 1 if suspicious else 0
+    steps_delta = payload.get("steps_delta")
     await db.execute(
         """UPDATE devices SET
             last_seen = $1,
@@ -50,7 +51,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             updated_at = $5
            WHERE user_id = $6 AND device_id = $7""",
         now_dt,
-        payload.get("steps_delta"),
+        steps_delta,
         battery_level,
         new_suspicious_count,
         now_dt,
@@ -63,7 +64,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
            (device_id, steps_delta, suspicious, battery_level, client_ts, server_ts)
            VALUES ($1, $2, $3, $4, $5, $6)""",
         device_id,
-        payload.get("steps_delta"),
+        steps_delta,
         int(suspicious),
         battery_level,
         payload["timestamp"],
@@ -80,6 +81,18 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
                 await _send_manual_report_to_guardians(db, user_id)
             else:
                 await _send_auto_report_to_guardians(db, user_id)
+
+        # 걸음수 정보 알림 — steps_delta 있을 때만 (자동 heartbeat만 해당)
+        if not manual and steps_delta is not None:
+            last_steps = device["last_steps"]
+            await _save_steps_info_notification(db, user_id, steps_delta, last_steps)
+
+        # last_steps 갱신 (다음날 비교용, 자동 heartbeat만)
+        if not manual and steps_delta is not None:
+            await db.execute(
+                "UPDATE devices SET last_steps = $1 WHERE user_id = $2 AND device_id = $3",
+                steps_delta, user_id, device_id,
+            )
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
 
@@ -120,6 +133,65 @@ async def _handle_suspicious(
     await _send_wellbeing_check_if_enabled(db, user_id, device_id)
 
 
+async def _save_guardian_notification(
+    db: asyncpg.Connection,
+    guardian_user_id: int,
+    subject_user_id: int,
+    invite_code: str | None,
+    alert_level: str,
+    title: str,
+    body: str,
+    is_push_sent: bool,
+) -> None:
+    """guardian_notifications 테이블에 알림 저장"""
+    await db.execute(
+        """INSERT INTO guardian_notifications
+           (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+        guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent,
+    )
+
+
+async def _save_steps_info_notification(
+    db: asyncpg.Connection,
+    user_id: int,
+    today_steps: int,
+    last_steps: int | None,
+) -> None:
+    """어제 vs 오늘 걸음수 정보 알림 DB 저장 (Push 발송 없음)"""
+    if last_steps is None:
+        return  # 첫 heartbeat, 어제 걸음수 없음 → 생성하지 않음
+
+    diff = today_steps - last_steps
+    if diff >= 0:
+        body = f"어제 {last_steps:,}보 → 오늘 {today_steps:,}보 ({diff:,}보 증가)"
+    else:
+        body = f"어제 {last_steps:,}보 → 오늘 {today_steps:,}보"
+
+    title = "📊 오늘 걸음수 정보"
+
+    # 대상자 invite_code 조회
+    invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
+    invite_code = invite_row["invite_code"] if invite_row else None
+
+    # 연결된 구독 활성 보호자에게 DB 저장
+    guardians = await db.fetch(
+        """SELECT g.guardian_user_id
+           FROM guardians g
+           JOIN subscriptions s ON s.user_id = g.guardian_user_id
+           WHERE g.subject_user_id = $1
+             AND s.plan != 'expired'
+             AND s.expires_at > NOW()""",
+        user_id,
+    )
+
+    for guardian in guardians:
+        await _save_guardian_notification(
+            db, guardian["guardian_user_id"], user_id, invite_code,
+            "info", title, body, is_push_sent=False,
+        )
+
+
 async def _send_wellbeing_check_if_enabled(
     db: asyncpg.Connection, user_id: int, device_id: str
 ) -> None:
@@ -157,6 +229,12 @@ async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -
             continue
         sound = "default" if use_sound(settings, "info") else None
         await push_service.push_battery_low(guardian["fcm_token"], user_id, sound=sound, invite_code=invite_code)
+        await _save_guardian_notification(
+            db, guardian["guardian_user_id"], user_id, invite_code,
+            "info", "🔋 대상자 폰 배터리 부족",
+            "폰 배터리가 10% 이하입니다. 충전이 필요할 수 있습니다.",
+            is_push_sent=True,
+        )
 
 
 async def _send_auto_report_to_guardians(db: asyncpg.Connection, user_id: int) -> None:
@@ -183,6 +261,12 @@ async def _send_auto_report_to_guardians(db: asyncpg.Connection, user_id: int) -
             continue
         sound = "default" if use_sound(settings, "info") else None
         await push_service.push_auto_report(guardian["fcm_token"], user_id, sound=sound, invite_code=invite_code)
+        await _save_guardian_notification(
+            db, guardian["guardian_user_id"], user_id, invite_code,
+            "info", "✅ 오늘 안부 확인 완료",
+            "대상자의 오늘 안부 확인이 정상 수신되었습니다.",
+            is_push_sent=True,
+        )
 
 
 async def _send_manual_report_to_guardians(db: asyncpg.Connection, user_id: int) -> None:
@@ -209,3 +293,9 @@ async def _send_manual_report_to_guardians(db: asyncpg.Connection, user_id: int)
             continue
         sound = "default" if use_sound(settings, "info") else None
         await push_service.push_manual_report(guardian["fcm_token"], user_id, sound=sound, invite_code=invite_code)
+        await _save_guardian_notification(
+            db, guardian["guardian_user_id"], user_id, invite_code,
+            "info", "✅ 수동 안부 확인",
+            "대상자께서 직접 안부 확인을 보냈습니다.",
+            is_push_sent=True,
+        )

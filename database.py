@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS devices (
     os_version       TEXT,
     fcm_token        TEXT,
     steps_delta      INTEGER,
+    last_steps       INTEGER,
     battery_level    INTEGER,
     suspicious_count INTEGER DEFAULT 0,
     heartbeat_hour   INTEGER NOT NULL DEFAULT 9,
@@ -134,6 +135,34 @@ VALUES
   ('android', '1.0.0', '1.0.0', 'https://play.google.com/store/apps/details?id=kr.co.anbucheck.app'),
   ('ios', '1.0.0', '1.0.0', 'https://apps.apple.com/app/id000000000')
 ON CONFLICT DO NOTHING
+""")
+
+    await conn.execute("""
+CREATE TABLE IF NOT EXISTS guardian_notifications (
+    id                  SERIAL PRIMARY KEY,
+    guardian_user_id    INTEGER NOT NULL REFERENCES users(id),
+    subject_user_id     INTEGER NOT NULL,
+    invite_code         TEXT,
+    alert_level         TEXT NOT NULL,
+    title               TEXT NOT NULL,
+    body                TEXT NOT NULL,
+    is_push_sent        BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+""")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_guardian_noti_guardian ON guardian_notifications (guardian_user_id, created_at DESC)")
+
+    # last_steps 컬럼 마이그레이션 (기존 DB 대응)
+    await conn.execute("""
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='devices' AND column_name='last_steps'
+    ) THEN
+        ALTER TABLE devices ADD COLUMN last_steps INTEGER;
+    END IF;
+END$$;
 """)
 
     await conn.execute("""

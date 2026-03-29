@@ -202,6 +202,12 @@ async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int) ->
             continue
         sound = "default" if use_sound(settings, "info") else None
         await push_service.push_resolved(guardian["fcm_token"], subject_user_id, sound=sound, invite_code=invite_code)
+        await db.execute(
+            """INSERT INTO guardian_notifications
+               (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
+               VALUES ($1, $2, $3, 'info', '✅ 안부 확인', '대상자의 안부 확인이 정상 복귀되었습니다.', TRUE)""",
+            guardian["guardian_user_id"], subject_user_id, invite_code,
+        )
 
     return resolved_levels
 
