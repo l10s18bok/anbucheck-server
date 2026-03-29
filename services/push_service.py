@@ -85,7 +85,10 @@ async def send_push(
             notification=messaging.Notification(title=title, body=body),
             data=msg_data,
             android=messaging.AndroidConfig(
-                notification=messaging.AndroidNotification(sound=sound)
+                notification=messaging.AndroidNotification(
+                    sound=sound,
+                    channel_id="anbu_alerts",  # 앱 종료 시 OS가 직접 표시할 채널
+                )
             ),
             apns=messaging.APNSConfig(
                 payload=messaging.APNSPayload(
