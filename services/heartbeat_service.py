@@ -96,9 +96,6 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
 
-    # suspicious 판정 처리
-    await _handle_suspicious(db, user_id, device_id, suspicious, new_suspicious_count, now_dt)
-
     # 배터리 ≤ 10% → 보호자 정보 알림 (1회만 발송, DND 적용)
     if battery_level is not None and battery_level <= 10:
         if not await alert_service.has_active_alert(db, user_id, "info"):
@@ -116,21 +113,6 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
         "heartbeat_minute": heartbeat_minute,
     }
 
-
-async def _handle_suspicious(
-    db: asyncpg.Connection,
-    user_id: int,
-    device_id: str,
-    suspicious: bool,
-    suspicious_count: int,
-    now_dt: datetime,
-) -> None:
-    if not suspicious:
-        return
-
-    # suspicious=true: 대상자에게 wellbeing_check만 발송
-    # 보호자 경고는 job_heartbeat_check(미수신 판정)에서만 처리
-    await _send_wellbeing_check_if_enabled(db, user_id, device_id)
 
 
 async def _save_guardian_notification(
@@ -191,18 +173,6 @@ async def _save_steps_info_notification(
             "info", title, body, is_push_sent=False,
         )
 
-
-async def _send_wellbeing_check_if_enabled(
-    db: asyncpg.Connection, user_id: int, device_id: str
-) -> None:
-    """보호자가 안부 확인 알림 ON인 경우 대상자에게 Push 발송
-    (현재 구현: 항상 발송. 향후 보호자 설정 테이블 추가 시 조건 추가 가능)"""
-    row = await db.fetchrow(
-        "SELECT fcm_token FROM devices WHERE user_id = $1 AND device_id = $2",
-        user_id, device_id,
-    )
-    if row and row["fcm_token"]:
-        await push_service.push_wellbeing_check(row["fcm_token"])
 
 
 async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -> None:

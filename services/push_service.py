@@ -219,15 +219,6 @@ async def push_schedule_updated(fcm_token: str, hour: int, minute: int) -> bool:
         return False
 
 
-async def push_wellbeing_check(fcm_token: str) -> bool:
-    """대상자에게 안부 확인 Push 발송"""
-    return await send_push(
-        fcm_token,
-        title="💛 안부 확인",
-        body="잘 지내고 계시죠? 화면을 한 번 터치해 주세요.",
-        data={"type": "wellbeing_check"},
-    )
-
 
 async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
