@@ -119,7 +119,7 @@ async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional
     return await send_push(
         fcm_token,
         title="🔋 대상자 폰 배터리 부족",
-        body="폰 배터리가 10% 이하입니다. 충전이 필요할 수 있습니다.",
+        body="폰 배터리가 20% 미만입니다. 충전이 필요할 수 있습니다.",
         data={"type": "alert_info", "reason": "battery_low", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )

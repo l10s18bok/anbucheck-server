@@ -143,8 +143,8 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
     invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
     invite_code = invite_row["invite_code"] if invite_row else None
 
-    # 1. 배터리 ≤ 10% → 정보 등급 1회 발송 후 종료 (이후 상향 없음)
-    if battery_level <= 10:
+    # 1. 배터리 < 20% → 정보 등급 1회 발송 후 종료 (이후 상향 없음)
+    if battery_level < 20:
         if not await has_active_alert(db, user_id, "info"):
             await create_alert(db, user_id, "info", last_seen_dt)
             for g in guardians:

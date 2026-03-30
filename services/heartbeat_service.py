@@ -99,8 +99,8 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
 
-    # 배터리 ≤ 10% → 보호자 정보 알림 (1회만 발송, DND 적용)
-    if battery_level is not None and battery_level <= 10:
+    # 배터리 < 20% → 보호자 정보 알림 (1회만 발송, DND 적용)
+    if battery_level is not None and battery_level < 20:
         if not await alert_service.has_active_alert(db, user_id, "info"):
             await alert_service.create_alert(db, user_id, "info", now_dt)
             await _send_battery_low_to_guardians(db, user_id)
@@ -202,7 +202,7 @@ async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -
         await _save_guardian_notification(
             db, guardian["guardian_user_id"], user_id, invite_code,
             "info", "🔋 대상자 폰 배터리 부족",
-            "폰 배터리가 10% 이하입니다. 충전이 필요할 수 있습니다.",
+            "폰 배터리가 20% 미만입니다. 충전이 필요할 수 있습니다.",
             is_push_sent=True,
         )
 
