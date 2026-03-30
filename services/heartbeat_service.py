@@ -95,14 +95,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
                 user_id, today_utc_start,
             )
             if not already_sent:
-                last_steps = device["last_steps"]
-                await _save_steps_info_notification(db, user_id, steps_delta, last_steps)
-
-                # last_steps 갱신 (다음날 비교용)
-                await db.execute(
-                    "UPDATE devices SET last_steps = $1 WHERE user_id = $2 AND device_id = $3",
-                    steps_delta, user_id, device_id,
-                )
+                await _save_steps_info_notification(db, user_id, steps_delta)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
 
@@ -148,25 +141,15 @@ async def _save_steps_info_notification(
     db: asyncpg.Connection,
     user_id: int,
     today_steps: int,
-    last_steps: int | None,
 ) -> None:
     """오늘 걸음수 정보 알림 DB 저장 (Push 발송 없음)
-    - last_steps 없으면(첫 heartbeat) 생략
-    - diff == 0: "건강을 위해 가벼운 산책이 필요해보입니다.(걸음수: 0보)"
-    - diff > 0:  "오늘은 N보를 걸으셨습니다."
-    - diff < 0:  재부팅 등으로 걸음수 리셋 → 생략
+    - steps == 0: "건강을 위해 가벼운 산책이 필요해보입니다.(걸음수: 0보)"
+    - steps > 0:  "오늘은 N보를 걸으셨습니다."
     """
-    if last_steps is None:
-        return  # 첫 heartbeat, 어제 걸음수 없음 → 생성하지 않음
-
-    diff = today_steps - last_steps
-    if diff < 0:
-        return  # 재부팅 등으로 걸음수 감소 → 생략
-
-    if diff == 0:
+    if today_steps == 0:
         body = "건강을 위해 가벼운 산책이 필요해보입니다.(걸음수: 0보)"
     else:
-        body = f"오늘은 {diff:,}보를 걸으셨습니다."
+        body = f"오늘은 {today_steps:,}보를 걸으셨습니다."
     title = "👟 오늘 걸음수 정보"
 
     # 대상자 invite_code 조회
