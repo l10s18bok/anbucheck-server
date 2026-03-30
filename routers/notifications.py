@@ -12,14 +12,14 @@ async def get_notifications(
     user=Depends(require_guardian),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    """당일 보호자 알림 목록 조회 (최신순)"""
+    """당일 보호자 알림 목록 조회 (시간순)"""
 
     rows = await db.fetch(
         """SELECT id, subject_user_id, invite_code, alert_level, title, body, is_push_sent, created_at
            FROM guardian_notifications
            WHERE guardian_user_id = $1
              AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
-           ORDER BY created_at DESC""",
+           ORDER BY created_at ASC""",
         user["user_id"],
     )
 
