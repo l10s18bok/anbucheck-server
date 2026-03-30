@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 import asyncpg
 
@@ -5,6 +7,8 @@ from database import get_db
 from middleware.auth import require_guardian
 from models.guardian import SubjectLinkIn, SubjectLinkOut, SubjectListOut, SubjectOut, AlertSummary
 from services.subject_service import link_subject, get_subjects, unlink_subject
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/subjects", tags=["subjects"])
 
@@ -84,10 +88,13 @@ async def trigger_heartbeat(
             detail="연결된 대상자를 찾을 수 없거나 FCM 토큰이 없습니다",
         )
 
+    logger.info(f"[Heartbeat 수동 트리거] 요청 수신 → invite_code={invite_code}, guardian_user_id={user['user_id']}, platform={row['platform']}, fcm_token={row['fcm_token'][:10]}...")
+
     from services.push_service import push_heartbeat_trigger
     token_invalid = await push_heartbeat_trigger(row["fcm_token"], row["platform"])
 
     if token_invalid:
+        logger.warning(f"[Heartbeat 수동 트리거] FCM 토큰 만료 → invite_code={invite_code}, subject_user_id={row['subject_user_id']}")
         await db.execute(
             "UPDATE devices SET fcm_token = NULL WHERE user_id = $1",
             row["subject_user_id"],
@@ -97,6 +104,7 @@ async def trigger_heartbeat(
             detail="FCM 토큰이 만료되었습니다. 대상자가 앱을 다시 열어야 합니다.",
         )
 
+    logger.info(f"[Heartbeat 수동 트리거] 완료 → invite_code={invite_code}")
     return {"message": "heartbeat 트리거를 발송했습니다"}
 
 

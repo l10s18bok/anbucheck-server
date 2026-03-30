@@ -63,9 +63,10 @@ async def push_heartbeat_trigger(fcm_token: str, platform: str) -> bool:
                 token=fcm_token,
             )
         await asyncio.to_thread(messaging.send, message)
+        logger.info(f"[Heartbeat 수동 트리거] FCM 발송 성공 → {platform} ({fcm_token[:10]}...)")
         return False  # 정상 발송 = 토큰 유효 (token_invalid = False)
     except Exception as e:
-        logger.error(f"[Heartbeat 트리거] FCM 오류 → {platform} ({fcm_token[:10]}...): {e}")
+        logger.error(f"[Heartbeat 수동 트리거] FCM 오류 → {platform} ({fcm_token[:10]}...): {e}")
         return _is_token_error(e)  # 토큰 오류 시에만 True
 
 
