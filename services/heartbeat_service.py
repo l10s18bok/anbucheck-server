@@ -1,4 +1,5 @@
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import logging
 
 import asyncpg
@@ -11,12 +12,20 @@ logger = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
 
 
+def _device_tz(tz_str: str | None) -> ZoneInfo:
+    """devices.timezone 문자열 → ZoneInfo. 파싱 실패 시 Asia/Seoul 기본값."""
+    try:
+        return ZoneInfo(tz_str or "Asia/Seoul")
+    except (ZoneInfoNotFoundError, Exception):
+        return ZoneInfo("Asia/Seoul")
+
+
 async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict) -> dict:
     device_id = payload["device_id"]
 
     # 기기 정보 조회
     device = await db.fetchrow(
-        "SELECT id, suspicious_count, heartbeat_hour, heartbeat_minute, last_seen, last_steps FROM devices WHERE user_id = $1 AND device_id = $2",
+        "SELECT id, suspicious_count, heartbeat_hour, heartbeat_minute, last_seen, last_steps, timezone FROM devices WHERE user_id = $1 AND device_id = $2",
         user_id, device_id,
     )
 
@@ -29,14 +38,15 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     battery_level = payload.get("battery_level")
     manual        = payload.get("manual", False)
 
-    # 오늘(KST) 이미 heartbeat를 보낸 경우 suspicious 판정 무시
+    # 오늘(기기 timezone) 이미 heartbeat를 보낸 경우 suspicious 판정 무시
     # → 하루 첫 번째 heartbeat에서만 센서값 비교
+    device_tz = _device_tz(device["timezone"])
     if suspicious and not manual:
         last_seen = device["last_seen"]
         if last_seen is not None:
-            last_seen_date = last_seen.astimezone(KST).date()
-            today_kst = datetime.now(KST).date()
-            if last_seen_date == today_kst:
+            last_seen_date = last_seen.astimezone(device_tz).date()
+            today_local = datetime.now(device_tz).date()
+            if last_seen_date == today_local:
                 suspicious = False
 
     # devices 테이블 갱신
@@ -84,8 +94,8 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
 
         # 걸음수 정보 알림 — steps_delta 있을 때만 (자동 heartbeat만, 당일 1회)
         if not manual and steps_delta is not None:
-            today_kst_start = datetime.now(KST).replace(hour=0, minute=0, second=0, microsecond=0)
-            today_utc_start = today_kst_start.astimezone(timezone.utc)
+            today_local_start = datetime.now(device_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+            today_utc_start = today_local_start.astimezone(timezone.utc)
             already_sent = await db.fetchval(
                 """SELECT 1 FROM guardian_notifications
                    WHERE subject_user_id = $1

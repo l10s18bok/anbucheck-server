@@ -39,8 +39,10 @@ async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict
                 new_token, existing["id"],
             )
             await db.execute(
-                "UPDATE devices SET fcm_token = $1, updated_at = NOW() WHERE device_id = $2",
-                device.get("fcm_token"), device["device_id"],
+                "UPDATE devices SET fcm_token = $1, timezone = $2, updated_at = NOW() WHERE device_id = $3",
+                device.get("fcm_token"),
+                device.get("timezone") or "Asia/Seoul",
+                device["device_id"],
             )
 
         subscription = None
@@ -88,8 +90,8 @@ async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict
         await db.execute(
             """INSERT INTO devices
                (user_id, device_id, platform, os_version, fcm_token,
-                heartbeat_hour, heartbeat_minute)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                heartbeat_hour, heartbeat_minute, timezone)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
             user_id,
             device["device_id"],
             device["platform"],
@@ -97,6 +99,7 @@ async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict
             device.get("fcm_token"),
             DEFAULT_HEARTBEAT_HOUR,
             DEFAULT_HEARTBEAT_MINUTE,
+            device.get("timezone") or "Asia/Seoul",
         )
 
         subscription = None

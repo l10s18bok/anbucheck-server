@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import logging
 from typing import Optional
 
@@ -20,22 +21,32 @@ _LEVEL_KEY_MAP = {
 
 
 async def get_guardian_settings(db: asyncpg.Connection, guardian_user_id: int) -> dict:
-    """보호자 알림 설정 조회 — 없으면 기본값(모두 ON) 반환"""
+    """보호자 알림 설정 조회 — 없으면 기본값(모두 ON) 반환.
+    guardian_timezone: 보호자 기기 timezone (IANA 문자열, 기본 'Asia/Seoul')."""
     row = await db.fetchrow(
-        "SELECT * FROM guardian_notification_settings WHERE guardian_user_id = $1",
+        """SELECT gns.*, COALESCE(d.timezone, 'Asia/Seoul') AS guardian_timezone
+           FROM guardian_notification_settings gns
+           LEFT JOIN devices d ON d.user_id = gns.guardian_user_id
+           WHERE gns.guardian_user_id = $1""",
         guardian_user_id,
     )
     if row is None:
+        tz_row = await db.fetchrow(
+            "SELECT COALESCE(timezone, 'Asia/Seoul') AS tz FROM devices WHERE user_id = $1",
+            guardian_user_id,
+        )
         return {
             "all_enabled": True, "urgent_enabled": True, "warning_enabled": True,
             "caution_enabled": True, "info_enabled": True,
             "dnd_enabled": False, "dnd_start": None, "dnd_end": None,
+            "guardian_timezone": tz_row["tz"] if tz_row else "Asia/Seoul",
         }
     return dict(row)
 
 
 def is_in_dnd(settings: dict) -> bool:
-    """현재 KST 시각이 방해금지 시간대인지 확인"""
+    """현재 보호자 로컬 시각이 방해금지 시간대인지 확인.
+    settings['guardian_timezone']: IANA timezone 문자열 (기본 'Asia/Seoul')."""
     if not settings["dnd_enabled"]:
         return False
     dnd_start = settings.get("dnd_start")
@@ -43,8 +54,13 @@ def is_in_dnd(settings: dict) -> bool:
     if not dnd_start or not dnd_end:
         return False
 
-    now_kst     = datetime.now(KST)
-    now_minutes = now_kst.hour * 60 + now_kst.minute
+    try:
+        tz = ZoneInfo(settings.get("guardian_timezone") or "Asia/Seoul")
+    except (ZoneInfoNotFoundError, Exception):
+        tz = ZoneInfo("Asia/Seoul")
+
+    now_local   = datetime.now(tz)
+    now_minutes = now_local.hour * 60 + now_local.minute
     start_h, start_m = map(int, dnd_start.split(":"))
     end_h,   end_m   = map(int, dnd_end.split(":"))
     start_minutes = start_h * 60 + start_m

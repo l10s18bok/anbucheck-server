@@ -7,6 +7,7 @@ class DeviceIn(BaseModel):
     fcm_token: Optional[str] = None
     platform: str  # android | ios
     os_version: Optional[str] = None
+    timezone: Optional[str] = 'Asia/Seoul'  # IANA timezone (e.g. 'Asia/Seoul', 'America/New_York')
 
 
 class UserRegisterIn(BaseModel):

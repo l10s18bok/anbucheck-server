@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -251,15 +252,31 @@ async def _escalate_urgent_if_needed(
 # ─────────────────────────────────────────────────────────────
 
 async def job_cleanup_guardian_notifications() -> None:
+    """보호자별 timezone 기준 어제 알림 일괄 삭제.
+    각 보호자의 로컬 자정 UTC를 계산하여 그 이전 알림만 삭제."""
     from database import get_pool
     async with get_pool().acquire() as db:
-        result = await db.execute(
-            """DELETE FROM guardian_notifications
-               WHERE created_at < date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'"""
+        rows = await db.fetch(
+            """SELECT DISTINCT gn.guardian_user_id,
+                      COALESCE(d.timezone, 'Asia/Seoul') AS tz
+               FROM guardian_notifications gn
+               LEFT JOIN devices d ON d.user_id = gn.guardian_user_id"""
         )
-    # asyncpg DELETE 반환값: "DELETE N" 형식
-    deleted_count = result.split()[-1] if result else "0"
-    logger.info(f"[자정 알림 정리] 삭제 완료 — {deleted_count}건")
+        total_deleted = 0
+        for row in rows:
+            try:
+                tz = ZoneInfo(row["tz"])
+            except (ZoneInfoNotFoundError, Exception):
+                tz = ZoneInfo("Asia/Seoul")
+            midnight_local = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+            midnight_utc = midnight_local.astimezone(timezone.utc)
+            result = await db.execute(
+                "DELETE FROM guardian_notifications WHERE guardian_user_id = $1 AND created_at < $2",
+                row["guardian_user_id"], midnight_utc,
+            )
+            count = int(result.split()[-1]) if result else 0
+            total_deleted += count
+    logger.info(f"[자정 알림 정리] 삭제 완료 — {total_deleted}건")
 
 
 # ─────────────────────────────────────────────────────────────
