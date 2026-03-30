@@ -18,7 +18,7 @@ async def get_notifications(
         """SELECT id, subject_user_id, invite_code, alert_level, title, body, is_push_sent, created_at
            FROM guardian_notifications
            WHERE guardian_user_id = $1
-             AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
+             AND created_at >= CURRENT_DATE AT TIME ZONE 'Asia/Seoul'
            ORDER BY created_at ASC""",
         user["user_id"],
     )
@@ -49,7 +49,7 @@ async def delete_all_notifications(
     result = await db.execute(
         """DELETE FROM guardian_notifications
            WHERE guardian_user_id = $1
-             AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'""",
+             AND created_at >= CURRENT_DATE AT TIME ZONE 'Asia/Seoul'""",
         user["user_id"],
     )
     deleted_count = int(result.split()[-1]) if result else 0
