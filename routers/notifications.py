@@ -38,3 +38,19 @@ async def get_notifications(
     ]
 
     return {"notifications": notifications}
+
+
+@router.delete("/notifications")
+async def delete_all_notifications(
+    user=Depends(require_guardian),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    """당일 보호자 알림 전체 삭제"""
+    result = await db.execute(
+        """DELETE FROM guardian_notifications
+           WHERE guardian_user_id = $1
+             AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'""",
+        user["user_id"],
+    )
+    deleted_count = int(result.split()[-1]) if result else 0
+    return {"deleted_count": deleted_count}
