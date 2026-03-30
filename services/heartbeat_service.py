@@ -82,17 +82,27 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             else:
                 await _send_auto_report_to_guardians(db, user_id)
 
-        # 걸음수 정보 알림 — steps_delta 있을 때만 (자동 heartbeat만 해당)
+        # 걸음수 정보 알림 — steps_delta 있을 때만 (자동 heartbeat만, 당일 1회)
         if not manual and steps_delta is not None:
-            last_steps = device["last_steps"]
-            await _save_steps_info_notification(db, user_id, steps_delta, last_steps)
-
-        # last_steps 갱신 (다음날 비교용, 자동 heartbeat만)
-        if not manual and steps_delta is not None:
-            await db.execute(
-                "UPDATE devices SET last_steps = $1 WHERE user_id = $2 AND device_id = $3",
-                steps_delta, user_id, device_id,
+            today_kst_start = datetime.now(KST).replace(hour=0, minute=0, second=0, microsecond=0)
+            today_utc_start = today_kst_start.astimezone(timezone.utc)
+            already_sent = await db.fetchval(
+                """SELECT 1 FROM guardian_notifications
+                   WHERE subject_user_id = $1
+                     AND title = '👟 오늘 걸음수 정보'
+                     AND created_at >= $2
+                   LIMIT 1""",
+                user_id, today_utc_start,
             )
+            if not already_sent:
+                last_steps = device["last_steps"]
+                await _save_steps_info_notification(db, user_id, steps_delta, last_steps)
+
+                # last_steps 갱신 (다음날 비교용)
+                await db.execute(
+                    "UPDATE devices SET last_steps = $1 WHERE user_id = $2 AND device_id = $3",
+                    steps_delta, user_id, device_id,
+                )
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
 
