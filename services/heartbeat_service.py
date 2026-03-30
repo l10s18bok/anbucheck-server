@@ -187,7 +187,7 @@ async def _save_steps_info_notification(
     for guardian in guardians:
         await _save_guardian_notification(
             db, guardian["guardian_user_id"], user_id, invite_code,
-            "info", title, body, is_push_sent=False,
+            "health", title, body, is_push_sent=False,
         )
 
 
