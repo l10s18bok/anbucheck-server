@@ -151,17 +151,22 @@ async def _save_steps_info_notification(
     last_steps: int | None,
 ) -> None:
     """오늘 걸음수 정보 알림 DB 저장 (Push 발송 없음)
-    - 걸음수 변화 없으면(diff <= 0) 알림 생략
-    - 변화 있을 때만 "오늘은 N걸음을 걸으셨습니다." 저장
+    - last_steps 없으면(첫 heartbeat) 생략
+    - diff == 0: "건강을 위해 가벼운 산책이 필요해보입니다.(걸음수: 0보)"
+    - diff > 0:  "오늘은 N보를 걸으셨습니다."
+    - diff < 0:  재부팅 등으로 걸음수 리셋 → 생략
     """
     if last_steps is None:
         return  # 첫 heartbeat, 어제 걸음수 없음 → 생성하지 않음
 
     diff = today_steps - last_steps
-    if diff <= 0:
-        return  # 걸음수 변화 없거나 감소(재부팅 등) → 알림 생략
+    if diff < 0:
+        return  # 재부팅 등으로 걸음수 감소 → 생략
 
-    body = f"오늘은 {diff:,}걸음을 걸으셨습니다."
+    if diff == 0:
+        body = "건강을 위해 가벼운 산책이 필요해보입니다.(걸음수: 0보)"
+    else:
+        body = f"오늘은 {diff:,}보를 걸으셨습니다."
     title = "👟 오늘 걸음수 정보"
 
     # 대상자 invite_code 조회
