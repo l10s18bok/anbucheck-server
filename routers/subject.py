@@ -91,7 +91,7 @@ async def trigger_heartbeat(
     logger.info(f"[Heartbeat 수동 트리거] 요청 수신 → invite_code={invite_code}, guardian_user_id={user['user_id']}, platform={row['platform']}, fcm_token={row['fcm_token'][:10]}...")
 
     from services.push_service import push_heartbeat_trigger
-    token_invalid = await push_heartbeat_trigger(row["fcm_token"], row["platform"])
+    token_invalid = await push_heartbeat_trigger(row["fcm_token"], row["platform"], label="수동 트리거")
 
     if token_invalid:
         logger.warning(f"[Heartbeat 수동 트리거] FCM 토큰 만료 → invite_code={invite_code}, subject_user_id={row['subject_user_id']}")

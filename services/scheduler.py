@@ -63,7 +63,7 @@ async def job_heartbeat_trigger() -> None:
 
         # FCM 병렬 발송 — asyncio.to_thread 기반으로 진짜 I/O 병렬 처리
         results = await asyncio.gather(
-            *[push_heartbeat_trigger(dev["fcm_token"], dev["platform"]) for dev in devices],
+            *[push_heartbeat_trigger(dev["fcm_token"], dev["platform"], label="예약 트리거") for dev in devices],
             return_exceptions=True,
         )
 
