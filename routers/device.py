@@ -14,22 +14,36 @@ async def get_my_device(
     db: asyncpg.Connection = Depends(get_db),
 ):
     row = await db.fetchrow(
-        """SELECT d.device_id, d.heartbeat_hour, d.heartbeat_minute, d.last_seen,
-                  (s.expires_at IS NOT NULL AND s.expires_at > NOW()) AS subscription_active
-           FROM devices d
-           LEFT JOIN subscriptions s ON s.user_id = d.user_id
-           WHERE d.user_id = $1
-           ORDER BY d.updated_at DESC, s.expires_at DESC NULLS LAST LIMIT 1""",
+        "SELECT device_id, heartbeat_hour, heartbeat_minute, last_seen FROM devices WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
         user["user_id"],
     )
     if row is None:
         raise HTTPException(status_code=404, detail="기기 정보를 찾을 수 없습니다")
+
+    # 구독 활성 여부: 보호자는 본인 구독, 대상자는 연결된 보호자 중 활성 구독 존재 여부
+    if user["role"] == "subject":
+        sub_active = await db.fetchval(
+            """SELECT EXISTS(
+                 SELECT 1 FROM guardians g
+                 JOIN subscriptions s ON s.user_id = g.guardian_user_id
+                 WHERE g.subject_user_id = $1
+                   AND s.plan != 'expired'
+                   AND s.expires_at > NOW()
+               )""",
+            user["user_id"],
+        )
+    else:
+        sub_active = await db.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM subscriptions WHERE user_id = $1 AND plan != 'expired' AND expires_at > NOW())",
+            user["user_id"],
+        )
+
     return DeviceInfoOut(
         device_id=row["device_id"],
         heartbeat_hour=row["heartbeat_hour"],
         heartbeat_minute=row["heartbeat_minute"],
         last_seen=row["last_seen"].isoformat() if row["last_seen"] else None,
-        subscription_active=row["subscription_active"] or False,
+        subscription_active=sub_active or False,
     )
 
 
