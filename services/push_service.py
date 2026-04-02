@@ -167,7 +167,7 @@ async def push_manual_report(fcm_token: str, subject_user_id: int, sound: Option
     return await send_push(
         fcm_token,
         title="✅ 수동 안부 확인",
-        body="대상자께서 직접 안부 확인을 보냈습니다.",
+        body="보호 대상자가 직접 안부 확인을 보냈습니다.",
         data={"type": "manual_report", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -177,7 +177,7 @@ async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional
     return await send_push(
         fcm_token,
         title="✅ 오늘 안부 확인 완료",
-        body="대상자의 오늘 안부 확인이 정상 수신되었습니다.",
+        body="보호 대상자가 오늘 예정시각에 알림을 보냈습니다.",
         data={"type": "auto_report", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )

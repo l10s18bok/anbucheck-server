@@ -73,7 +73,10 @@ def is_in_dnd(settings: dict) -> bool:
 
 
 def should_send(settings: dict, level: str) -> bool:
-    """알림 자체를 보낼지 여부 (DND와 무관한 ON/OFF 설정만 확인)"""
+    """알림 자체를 보낼지 여부 (DND와 무관한 ON/OFF 설정만 확인)
+    긴급(urgent) 알림은 스위치 OFF여도 항상 발송"""
+    if level == "urgent":
+        return True
     if not settings["all_enabled"]:
         return False
     key = _LEVEL_KEY_MAP.get(level)

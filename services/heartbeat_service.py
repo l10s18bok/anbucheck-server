@@ -190,7 +190,7 @@ async def _save_steps_info_notification(
     if today_steps == 0:
         body = "건강을 위해 가벼운 산책이 필요해보입니다.(걸음수: 0보)"
     else:
-        body = f"오늘은 {today_steps:,}보를 걸으셨습니다."
+        body = f"오늘은 {today_steps:,}보를 걸었습니다."
 
     invite_code = await _get_invite_code(db, user_id)
     await _save_notification_event(
@@ -223,7 +223,7 @@ async def _send_auto_report_to_guardians(db: asyncpg.Connection, user_id: int) -
     await _save_notification_event(
         db, user_id, invite_code,
         "info", "✅ 오늘 안부 확인 완료",
-        "대상자의 오늘 안부 확인이 정상 수신되었습니다.",
+        "보호 대상자가 오늘 예정시각에 알림을 보냈습니다.",
     )
     await _push_to_guardians(
         db, guardians, "info",
@@ -239,7 +239,7 @@ async def _send_manual_report_to_guardians(db: asyncpg.Connection, user_id: int)
     await _save_notification_event(
         db, user_id, invite_code,
         "info", "✅ 수동 안부 확인",
-        "대상자께서 직접 안부 확인을 보냈습니다.",
+        "보호 대상자가 직접 안부 확인을 보냈습니다.",
     )
     await _push_to_guardians(
         db, guardians, "info",
