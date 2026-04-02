@@ -4,7 +4,6 @@ import asyncpg
 from database import get_db
 from middleware.auth import get_current_user
 from models.device import FcmTokenIn, HeartbeatScheduleIn, HeartbeatScheduleOut, DeviceInfoOut
-from services.push_service import push_schedule_updated
 
 router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 
@@ -60,38 +59,21 @@ async def update_heartbeat_schedule(
     if not (0 <= m <= 59):
         raise HTTPException(status_code=400, detail="heartbeat 분은 0~59 사이여야 합니다")
 
-    if user["role"] == "subject":
-        # 본인 기기만 변경 가능
-        row = await db.fetchrow(
-            "SELECT id FROM devices WHERE device_id = $1 AND user_id = $2",
-            device_id, user["user_id"],
-        )
-        if row is None:
-            raise HTTPException(status_code=403, detail="권한이 없습니다")
-    elif user["role"] == "guardian":
-        # 연결된 대상자의 기기인지 확인
-        row = await db.fetchrow(
-            """SELECT d.id FROM devices d
-               JOIN guardians g ON g.subject_user_id = d.user_id
-               WHERE d.device_id = $1 AND g.guardian_user_id = $2""",
-            device_id, user["user_id"],
-        )
-        if row is None:
-            raise HTTPException(status_code=403, detail="권한이 없습니다")
+    # 대상자 본인 기기만 변경 가능
+    if user["role"] != "subject":
+        raise HTTPException(status_code=403, detail="대상자만 heartbeat 시각을 변경할 수 있습니다")
+    row = await db.fetchrow(
+        "SELECT id FROM devices WHERE device_id = $1 AND user_id = $2",
+        device_id, user["user_id"],
+    )
+    if row is None:
+        raise HTTPException(status_code=403, detail="권한이 없습니다")
 
     await db.execute(
         """UPDATE devices SET heartbeat_hour = $1, heartbeat_minute = $2,
            updated_at = NOW() WHERE device_id = $3""",
         h, m, device_id,
     )
-
-    # 보호자가 변경한 경우 대상자 기기로 Silent Push 발송 (즉시 반영)
-    if user["role"] == "guardian":
-        row = await db.fetchrow(
-            "SELECT fcm_token FROM devices WHERE device_id = $1", device_id
-        )
-        if row and row["fcm_token"]:
-            await push_schedule_updated(row["fcm_token"], h, m)
 
     return HeartbeatScheduleOut(
         device_id=device_id,

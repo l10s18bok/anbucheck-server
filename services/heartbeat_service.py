@@ -5,7 +5,7 @@ import logging
 import asyncpg
 
 from services import alert_service, push_service
-from services.alert_service import get_guardian_settings, should_send, use_sound
+from services.alert_service import get_guardian_settings, should_send, should_push
 
 logger = logging.getLogger(__name__)
 
@@ -207,13 +207,14 @@ async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -
         settings = await get_guardian_settings(db, guardian["guardian_user_id"])
         if not should_send(settings, "info"):
             continue
-        sound = "default" if use_sound(settings, "info") else None
-        await push_service.push_battery_low(guardian["fcm_token"], user_id, sound=sound, invite_code=invite_code)
+        is_pushed = False
+        if should_push(settings, "info"):  # DND 아닐 때만 Push 발송
+            is_pushed = await push_service.push_battery_low(guardian["fcm_token"], user_id, invite_code=invite_code)
         await _save_guardian_notification(
             db, guardian["guardian_user_id"], user_id, invite_code,
             "info", "🔋 대상자 폰 배터리 부족",
             "폰 배터리가 20% 미만입니다. 충전이 필요할 수 있습니다.",
-            is_push_sent=True,
+            is_push_sent=is_pushed,
         )
 
 
@@ -239,13 +240,14 @@ async def _send_auto_report_to_guardians(db: asyncpg.Connection, user_id: int) -
         settings = await get_guardian_settings(db, guardian["guardian_user_id"])
         if not should_send(settings, "info"):
             continue
-        sound = "default" if use_sound(settings, "info") else None
-        await push_service.push_auto_report(guardian["fcm_token"], user_id, sound=sound, invite_code=invite_code)
+        is_pushed = False
+        if should_push(settings, "info"):  # DND 아닐 때만 Push 발송
+            is_pushed = await push_service.push_auto_report(guardian["fcm_token"], user_id, invite_code=invite_code)
         await _save_guardian_notification(
             db, guardian["guardian_user_id"], user_id, invite_code,
             "info", "✅ 오늘 안부 확인 완료",
             "대상자의 오늘 안부 확인이 정상 수신되었습니다.",
-            is_push_sent=True,
+            is_push_sent=is_pushed,
         )
 
 
@@ -271,11 +273,12 @@ async def _send_manual_report_to_guardians(db: asyncpg.Connection, user_id: int)
         settings = await get_guardian_settings(db, guardian["guardian_user_id"])
         if not should_send(settings, "info"):
             continue
-        sound = "default" if use_sound(settings, "info") else None
-        await push_service.push_manual_report(guardian["fcm_token"], user_id, sound=sound, invite_code=invite_code)
+        is_pushed = False
+        if should_push(settings, "info"):  # DND 아닐 때만 Push 발송
+            is_pushed = await push_service.push_manual_report(guardian["fcm_token"], user_id, invite_code=invite_code)
         await _save_guardian_notification(
             db, guardian["guardian_user_id"], user_id, invite_code,
             "info", "✅ 수동 안부 확인",
             "대상자께서 직접 안부 확인을 보냈습니다.",
-            is_push_sent=True,
+            is_push_sent=is_pushed,
         )

@@ -82,8 +82,8 @@ def should_send(settings: dict, level: str) -> bool:
     return True
 
 
-def use_sound(settings: dict, level: str) -> bool:
-    """소리 알림 여부 — 긴급은 DND 무관 항상 소리, 나머지는 DND 시간대면 무음"""
+def should_push(settings: dict, level: str) -> bool:
+    """Push 발송 여부 — DND 시간대면 Push 미발송 (urgent는 DND 무관 항상 발송)"""
     if level == "urgent":
         return True
     return not is_in_dnd(settings)
@@ -217,13 +217,14 @@ async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int) ->
         settings = await get_guardian_settings(db, guardian["guardian_user_id"])
         if not should_send(settings, "info"):
             continue
-        sound = "default" if use_sound(settings, "info") else None
-        await push_service.push_resolved(guardian["fcm_token"], subject_user_id, sound=sound, invite_code=invite_code)
+        is_pushed = False
+        if should_push(settings, "info"):  # DND 아닐 때만 Push 발송
+            is_pushed = await push_service.push_resolved(guardian["fcm_token"], subject_user_id, invite_code=invite_code)
         await db.execute(
             """INSERT INTO guardian_notifications
                (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
-               VALUES ($1, $2, $3, 'info', '✅ 안부 확인', '대상자의 안부 확인이 정상 복귀되었습니다.', TRUE)""",
-            guardian["guardian_user_id"], subject_user_id, invite_code,
+               VALUES ($1, $2, $3, 'info', '✅ 안부 확인', '대상자의 안부 확인이 정상 복귀되었습니다.', $4)""",
+            guardian["guardian_user_id"], subject_user_id, invite_code, is_pushed,
         )
 
     return resolved_levels
