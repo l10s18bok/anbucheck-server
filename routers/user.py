@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends
 import asyncpg
 
@@ -5,6 +8,9 @@ from database import get_db
 from middleware.auth import get_current_user
 from models.user import UserRegisterIn, UserRegisterOut, SubscriptionOut
 from services.user_service import register_user
+from services import push_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
@@ -34,8 +40,31 @@ async def delete_me(
     user: dict = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    """현재 사용자 계정 및 관련 데이터 전체 삭제 (모드 변경 시 호출)"""
+    """현재 사용자 계정 및 관련 데이터 전체 삭제 (탈퇴)"""
     user_id = user["user_id"]
+    role = user["role"]
+
+    # 대상자 탈퇴 시 연결된 보호자에게 Push 알림 (DB 저장 없음)
+    if role == "subject":
+        invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
+        invite_code = invite_row["invite_code"] if invite_row else "알 수 없음"
+        guardians = await db.fetch(
+            """SELECT d.fcm_token FROM guardians g
+               JOIN devices d ON d.user_id = g.guardian_user_id
+               WHERE g.subject_user_id = $1 AND d.fcm_token IS NOT NULL""",
+            user_id,
+        )
+        if guardians:
+            coros = [
+                push_service.send_push(
+                    g["fcm_token"],
+                    "대상자 탈퇴 알림",
+                    f"대상자({invite_code})가 서비스를 탈퇴했습니다.",
+                    data={"type": "subject_withdrawn", "invite_code": invite_code},
+                )
+                for g in guardians
+            ]
+            await asyncio.gather(*coros, return_exceptions=True)
 
     # 연결된 기기의 device_id 목록 조회 (heartbeat_logs 삭제용)
     device_ids = await db.fetch(
@@ -52,6 +81,9 @@ async def delete_me(
         # 보호자 알림 / 설정
         await db.execute("DELETE FROM guardian_notifications WHERE guardian_user_id = $1", user_id)
         await db.execute("DELETE FROM guardian_notification_settings WHERE guardian_user_id = $1", user_id)
+
+        # 해당 대상자 관련 보호자 알림 정리
+        await db.execute("DELETE FROM guardian_notifications WHERE subject_user_id = $1", user_id)
 
         # 경고 알림
         await db.execute("DELETE FROM alerts WHERE subject_user_id = $1", user_id)
