@@ -419,13 +419,13 @@ Response: 200 OK
 | 테이블 | 처리 | 이유 |
 | ----------------------- | ------ | ------------------------------------------------- |
 | `guardians` | 삭제 | 보호자-대상자 연결 레코드 자체 |
-| `guardian_notifications`| 삭제 | 해당 `guardian_user_id + subject_user_id` 기준 삭제. 해제 후 과거 이력 불필요 |
+| `notification_events` | **유지** | `subject_user_id` 기준 공유 데이터. 다른 보호자가 같은 대상자를 볼 수 있으므로 삭제 금지 |
 | `alerts` | **유지** | `subject_user_id` 기준 공유 데이터. 다른 보호자가 같은 대상자를 볼 수 있으므로 삭제 금지 |
 | `heartbeat_logs` | **유지** | 대상자 활동 로그. 연결 해제와 무관 |
 
 **재연결 시 동작:**
 - 동일 `invite_code`로 재연결 가능 (`users` 테이블의 대상자 계정은 유지됨)
-- 재연결 시 새 `guardian_id`가 발급되며 과거 `guardian_notifications` 이력은 없음 (새로 시작)
+- 재연결 시 새 `guardian_id`가 발급되며, 대상자의 당일 알림 이벤트는 즉시 조회 가능
 
 
 ### 4.6 Heartbeat 수신
@@ -767,6 +767,77 @@ Response: 200 OK
 - 플랫폼별(android/ios) 독립 관리
 
 
+### 4.16 알림 목록 조회 (보호자용)
+```
+GET /api/v1/notifications
+Headers:
+  Authorization: Bearer <device_token>
+  X-Timezone-Offset: +09:00
+Response: 200 OK
+{
+  "notifications": [
+    {
+      "id": 1,
+      "subject_user_id": 1,
+      "invite_code": "K7M-4PXR",
+      "alert_level": "info",
+      "title": "✅ 오늘 안부 확인 완료",
+      "body": "대상자의 오늘 안부 확인이 정상 수신되었습니다.",
+      "created_at": "2026-04-02T09:32:00+00:00"
+    }
+  ]
+}
+```
+
+- 보호자에 연결된 **모든 대상자**의 당일 알림 이벤트를 조회
+- 알림은 대상자 중심(`notification_events`) 테이블에 저장되므로, 같은 대상자를 보는 모든 보호자가 동일한 알림을 볼 수 있음
+- 보호자별 알림 설정(`guardian_notification_settings`)에 따라 서버에서 필터링하여 반환
+  - `all_enabled = false` → 전체 비활성
+  - 등급별 ON/OFF (`urgent_enabled`, `warning_enabled`, `caution_enabled`, `info_enabled`)
+- `X-Timezone-Offset` 헤더로 클라이언트 타임존 전달 → 오늘 자정 기준 필터링
+- 파싱 실패 시 기본값 KST(+09:00) 적용
+
+
+### 4.17 알림 전체 삭제 (보호자용)
+```
+DELETE /api/v1/notifications
+Headers:
+  Authorization: Bearer <device_token>
+  X-Timezone-Offset: +09:00
+Response: 200 OK
+{
+  "deleted_count": 5
+}
+```
+
+- 보호자에 연결된 대상자의 당일 알림 이벤트를 전체 삭제
+- 다른 보호자도 동일 대상자의 알림이 삭제됨 (대상자 중심 데이터이므로)
+
+
+### 4.18 사용자 탈퇴
+```
+DELETE /api/v1/users/me
+Headers:
+  Authorization: Bearer <device_token>
+Response: 204 No Content
+```
+
+**탈퇴 시 서버 삭제 정책:**
+
+| 테이블 | 처리 | 비고 |
+| ----------------------- | ------ | ------------------------------------------------- |
+| `heartbeat_logs` | 삭제 | 해당 기기의 heartbeat 로그 |
+| `guardian_notification_settings` | 삭제 | 보호자 알림 설정 |
+| `notification_events` | 삭제 | `subject_user_id` 기준 대상자 알림 이벤트 |
+| `alerts` | 삭제 | `subject_user_id` 기준 활성 경고 |
+| `guardians` | 삭제 | 보호자-대상자 연결 (양방향) |
+| `subscriptions` | 삭제 | 구독 정보 |
+| `devices` | 삭제 | 기기 정보 |
+| `users` | 삭제 | 사용자 계정 |
+
+- 대상자 탈퇴 시 연결된 보호자에게 "대상자 탈퇴 알림" Push 발송 (DB 저장 없음)
+
+
 ---
 
 
@@ -899,7 +970,44 @@ VALUES
   ('android', '1.0.0', '1.0.0', 'https://play.google.com/store/apps/details?id=com.anbu.app'),
   ('ios', '1.0.0', '1.0.0', 'https://apps.apple.com/app/id000000000')
 ON CONFLICT (platform) DO NOTHING;
+
+
+-- 알림 이벤트 테이블 (대상자 중심)
+-- 대상자별 1건 저장, 보호자 조회 시 guardians 테이블 JOIN으로 필터링
+CREATE TABLE IF NOT EXISTS notification_events (
+    id                  SERIAL PRIMARY KEY,
+    subject_user_id     INTEGER NOT NULL,              -- 대상자 user_id
+    invite_code         TEXT,                          -- 대상자 고유 코드 (조회 편의)
+    alert_level         TEXT NOT NULL,                 -- info, caution, warning, urgent, health
+    title               TEXT NOT NULL,
+    body                TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ne_subject_created ON notification_events (subject_user_id, created_at DESC);
+
+
+-- 보호자 알림 설정 테이블
+CREATE TABLE IF NOT EXISTS guardian_notification_settings (
+    guardian_user_id  INTEGER PRIMARY KEY REFERENCES users(id),
+    all_enabled       BOOLEAN NOT NULL DEFAULT TRUE,   -- 전체 알림 ON/OFF
+    urgent_enabled    BOOLEAN NOT NULL DEFAULT TRUE,   -- 긴급 등급 ON/OFF
+    warning_enabled   BOOLEAN NOT NULL DEFAULT TRUE,   -- 경고 등급 ON/OFF
+    caution_enabled   BOOLEAN NOT NULL DEFAULT TRUE,   -- 주의 등급 ON/OFF
+    info_enabled      BOOLEAN NOT NULL DEFAULT TRUE,   -- 정보 등급 ON/OFF
+    dnd_enabled       BOOLEAN NOT NULL DEFAULT FALSE,  -- 방해금지 모드 ON/OFF
+    dnd_start         TEXT,                            -- 방해금지 시작 시각 (HH:MM)
+    dnd_end           TEXT,                            -- 방해금지 종료 시각 (HH:MM)
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 ```
+
+**알림 아키텍처 설계 원칙:**
+- 알림 이벤트는 **대상자 중심**으로 1건만 저장 (이전: 보호자마다 각각 저장)
+- 보호자가 알림을 조회할 때 `guardians` 테이블 JOIN으로 연결된 대상자 필터링
+- 보호자별 알림 설정(`guardian_notification_settings`)은 **조회 시점에 적용** (저장 시점 아님)
+- Push 알림은 보호자마다 개별 발송 (FCM 토큰별), DB 저장과 분리
+- 같은 대상자를 여러 보호자가 보는 경우 모두 동일한 알림 목록을 확인 가능
 
 **PostgreSQL 참고사항:**
 - `BOOLEAN` → 네이티브 타입 사용 (`TRUE`/`FALSE`)
@@ -1036,7 +1144,8 @@ ON CONFLICT (platform) DO NOTHING;
 2. 조회된 각 대상자:
    a. heartbeat_logs 삭제 (해당 device_id)
    b. alerts 삭제
-   c. devices 삭제
+   c. notification_events 삭제
+   d. devices 삭제
    e. users 삭제
 
 3. 별도 알림 없음 (앱은 그대로 남아있음)
@@ -1046,7 +1155,38 @@ ON CONFLICT (platform) DO NOTHING;
 ```
 
 
-### 6.5 보호자 Push 발송 실패 처리
+### 6.5 당일 알림 자정 정리
+```
+실행 주기: 매일 00:00 KST
+
+처리 흐름:
+1. notification_events 테이블에서 대상자별 timezone 조회
+   SELECT DISTINCT ne.subject_user_id,
+          COALESCE(d.timezone, 'Asia/Seoul') AS tz
+   FROM notification_events ne
+   LEFT JOIN devices d ON d.user_id = ne.subject_user_id
+
+2. 각 대상자의 기기 timezone 기준 자정 이전 알림 삭제
+   DELETE FROM notification_events
+   WHERE subject_user_id = $1 AND created_at < $2
+   (자정 = 대상자 기기 timezone 기준 오늘 00:00 UTC 변환값)
+
+※ 당일 알림만 보관하고 전날 이전 알림은 자정에 일괄 삭제
+```
+
+
+### 6.6 heartbeat_logs 30일 초과 삭제
+```
+실행 주기: 매일 04:00 KST
+
+처리 흐름:
+1. DELETE FROM heartbeat_logs WHERE server_ts < NOW() - INTERVAL '30 days'
+
+※ 30일 이상 지난 heartbeat 로그를 삭제하여 DB 용량 관리
+```
+
+
+### 6.7 보호자 Push 발송 실패 처리
 ```
 실행 주기: Push 발송 시마다
 
@@ -1223,6 +1363,9 @@ web: uvicorn main:app --host 0.0.0.0 --port $PORT
 | `/api/v1/alerts` | GET | 대상자별 경고 목록 조회 (보호자용) |
 | `/api/v1/alerts/{id}/clear` | PUT | 개별 경고 클리어 (보호자가 건강 확인 후) |
 | `/api/v1/alerts/clear-all` | PUT | 대상자별 모든 활성 경고 일괄 클리어 + 적응형 주기 복원 |
+| `/api/v1/notifications` | GET | 당일 알림 목록 조회 (보호자용, 대상자 중심 + 설정 필터링) |
+| `/api/v1/notifications` | DELETE | 당일 알림 전체 삭제 (보호자용) |
+| `/api/v1/users/me` | DELETE | 사용자 탈퇴 (계정 및 관련 데이터 전체 삭제) |
 | `/api/v1/devices/fcm-token` | PUT | FCM 토큰 갱신 |
 | `/api/v1/devices/{device_id}/heartbeat-schedule` | PATCH | heartbeat 시각 변경 (대상자/보호자) |
 | `/api/v1/app/version-check` | GET | 앱 버전 체크 (강제 업데이트 판정) |
