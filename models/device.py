@@ -23,3 +23,4 @@ class DeviceInfoOut(BaseModel):
     heartbeat_minute: int
     last_seen: str | None = None
     subscription_active: bool = False
+    guardian_count: int = 0

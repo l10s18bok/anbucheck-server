@@ -38,12 +38,19 @@ async def get_my_device(
             user["user_id"],
         )
 
+    # 연결된 보호자 수
+    guardian_count = await db.fetchval(
+        "SELECT COUNT(*) FROM guardians WHERE subject_user_id = $1",
+        user["user_id"],
+    ) or 0
+
     return DeviceInfoOut(
         device_id=row["device_id"],
         heartbeat_hour=row["heartbeat_hour"],
         heartbeat_minute=row["heartbeat_minute"],
         last_seen=row["last_seen"].isoformat() if row["last_seen"] else None,
         subscription_active=sub_active or False,
+        guardian_count=guardian_count,
     )
 
 

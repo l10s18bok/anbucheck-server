@@ -62,7 +62,8 @@ async def link_subject(db: asyncpg.Connection, guardian_user_id: int, invite_cod
 async def get_subjects(db: asyncpg.Connection, guardian_user_id: int) -> dict:
     rows = await db.fetch(
         """SELECT g.id AS guardian_id, u.id AS user_id, u.invite_code,
-                  d.last_seen, d.device_id, d.heartbeat_hour, d.heartbeat_minute
+                  d.last_seen, d.device_id, d.heartbeat_hour, d.heartbeat_minute,
+                  d.battery_level
            FROM guardians g
            JOIN users u ON g.subject_user_id = u.id
            LEFT JOIN devices d ON d.id = (
@@ -86,6 +87,7 @@ async def get_subjects(db: asyncpg.Connection, guardian_user_id: int) -> dict:
                 "device_id": row["device_id"],
                 "heartbeat_hour": row["heartbeat_hour"] if row["heartbeat_hour"] is not None else 9,
                 "heartbeat_minute": row["heartbeat_minute"] if row["heartbeat_minute"] is not None else 30,
+                "battery_level": row["battery_level"],
             }
         )
 
