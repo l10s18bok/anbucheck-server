@@ -22,3 +22,4 @@ class DeviceInfoOut(BaseModel):
     heartbeat_hour: int
     heartbeat_minute: int
     last_seen: str | None = None
+    subscription_active: bool = False

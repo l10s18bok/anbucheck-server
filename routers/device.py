@@ -15,9 +15,12 @@ async def get_my_device(
     db: asyncpg.Connection = Depends(get_db),
 ):
     row = await db.fetchrow(
-        """SELECT device_id, heartbeat_hour, heartbeat_minute, last_seen
-           FROM devices WHERE user_id = $1
-           ORDER BY updated_at DESC LIMIT 1""",
+        """SELECT d.device_id, d.heartbeat_hour, d.heartbeat_minute, d.last_seen,
+                  (s.expires_at IS NOT NULL AND s.expires_at > NOW()) AS subscription_active
+           FROM devices d
+           LEFT JOIN subscriptions s ON s.user_id = d.user_id
+           WHERE d.user_id = $1
+           ORDER BY d.updated_at DESC, s.expires_at DESC NULLS LAST LIMIT 1""",
         user["user_id"],
     )
     if row is None:
@@ -27,6 +30,7 @@ async def get_my_device(
         heartbeat_hour=row["heartbeat_hour"],
         heartbeat_minute=row["heartbeat_minute"],
         last_seen=row["last_seen"].isoformat() if row["last_seen"] else None,
+        subscription_active=row["subscription_active"] or False,
     )
 
 
