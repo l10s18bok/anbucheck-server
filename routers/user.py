@@ -78,12 +78,11 @@ async def delete_me(
                 "DELETE FROM heartbeat_logs WHERE device_id = $1", row["device_id"]
             )
 
-        # 보호자 알림 / 설정
-        await db.execute("DELETE FROM guardian_notifications WHERE guardian_user_id = $1", user_id)
+        # 보호자 알림 설정
         await db.execute("DELETE FROM guardian_notification_settings WHERE guardian_user_id = $1", user_id)
 
-        # 해당 대상자 관련 보호자 알림 정리
-        await db.execute("DELETE FROM guardian_notifications WHERE subject_user_id = $1", user_id)
+        # 해당 대상자 관련 알림 이벤트 정리
+        await db.execute("DELETE FROM notification_events WHERE subject_user_id = $1", user_id)
 
         # 경고 알림
         await db.execute("DELETE FROM alerts WHERE subject_user_id = $1", user_id)

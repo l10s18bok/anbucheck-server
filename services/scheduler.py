@@ -19,18 +19,13 @@ from apscheduler.triggers.cron import CronTrigger
 import asyncpg
 
 from services.alert_service import get_guardian_settings, should_send, should_push
+from services.heartbeat_service import _save_notification_event, _get_active_guardians, _get_invite_code, _push_to_guardians
 
 logger = logging.getLogger(__name__)
 
 KST = timezone(timedelta(hours=9))
 
 scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
-
-
-def _should_push(settings: dict, level: str) -> bool:
-    """Push 발송 여부 — DND 시간대면 Push 미발송 (urgent 제외, DB는 별도 저장)"""
-    return should_push(settings, level)
-
 
 
 # ─────────────────────────────────────────────────────────────
@@ -41,8 +36,6 @@ async def job_heartbeat_check() -> None:
     now_kst = datetime.now(KST)
     current_minutes = now_kst.hour * 60 + now_kst.minute
 
-    # heartbeat 시각 + 120분 = 현재인 기기 중 오늘 미수신
-    # last_seen < 오늘 자정(KST → UTC 기준)
     today_kst_start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
     today_utc_start = today_kst_start.astimezone(timezone.utc)
 
@@ -69,116 +62,76 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
     user_id = row["user_id"]
     battery_level = row["battery_level"] or 0
 
-    # 구독 활성 보호자 확인
-    guardians = await db.fetch(
-        """SELECT g.guardian_user_id, d.fcm_token
-           FROM guardians g
-           JOIN subscriptions s ON s.user_id = g.guardian_user_id
-           JOIN devices d ON d.user_id = g.guardian_user_id
-           WHERE g.subject_user_id = $1
-             AND s.plan != 'expired'
-             AND s.expires_at > NOW()
-             AND d.fcm_token IS NOT NULL""",
-        user_id,
-    )
-
+    guardians = await _get_active_guardians(db, user_id)
     if not guardians:
         return
 
-    last_seen_dt = row["last_seen"]  # TIMESTAMPTZ → datetime
+    last_seen_dt = row["last_seen"]
     from services.alert_service import create_alert, has_active_alert
     from services.push_service import (
         push_battery_dead, push_caution, push_warning, push_urgent
     )
 
-    # 대상자 invite_code 조회
-    invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
-    invite_code = invite_row["invite_code"] if invite_row else None
+    invite_code = await _get_invite_code(db, user_id)
 
-    # 1. 배터리 < 20% → 정보 등급 1회 발송 후 종료 (이후 상향 없음)
+    # 1. 배터리 < 20% → 정보 등급 1회 발송 후 종료
     if battery_level < 20:
         if not await has_active_alert(db, user_id, "info"):
             await create_alert(db, user_id, "info", last_seen_dt)
-            for g in guardians:
-                settings = await get_guardian_settings(db, g["guardian_user_id"])
-                if not should_send(settings, "info"):
-                    continue
-                is_pushed = False
-                if _should_push(settings, "info"):
-                    is_pushed = await push_battery_dead(g["fcm_token"], user_id, battery_level, invite_code=invite_code)
-                await db.execute(
-                    """INSERT INTO guardian_notifications
-                       (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
-                       VALUES ($1, $2, $3, 'info', '🔋 배터리 방전 추정',
-                               '대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 충전 후 자동으로 정상 복귀됩니다.', $4)""",
-                    g["guardian_user_id"], user_id, invite_code, is_pushed,
-                )
+            await _save_notification_event(
+                db, user_id, invite_code,
+                "info", "🔋 배터리 방전 추정",
+                "대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 충전 후 자동으로 정상 복귀됩니다.",
+            )
+            await _push_to_guardians(
+                db, guardians, "info",
+                lambda token: push_battery_dead(token, user_id, battery_level, invite_code=invite_code),
+            )
         return
 
     # 2. 누적 미수신 등급 판정
-    #    기존 활성 경고 상태로 횟수 결정:
-    #    없음 → 1회(주의) / 주의 있음 → 2회(경고) / 경고 있음 → 3회이상(긴급) / 긴급 있음 → 긴급 반복
     has_urgent  = await has_active_alert(db, user_id, "urgent")
     has_warning = await has_active_alert(db, user_id, "warning")
     has_caution = await has_active_alert(db, user_id, "caution")
 
     if has_urgent:
-        # 긴급 지속 — days_inactive 증가 + 반복 발송
         await _escalate_urgent_if_needed(db, user_id, last_seen_dt, guardians, invite_code)
 
     elif has_warning:
-        # 경고 3회 이상 → 긴급 상향
         await create_alert(db, user_id, "urgent", last_seen_dt)
-        for g in guardians:
-            settings = await get_guardian_settings(db, g["guardian_user_id"])
-            if not should_send(settings, "urgent"):
-                continue
-            is_pushed = False
-            if _should_push(settings, "urgent"):
-                is_pushed = await push_urgent(g["fcm_token"], user_id, invite_code=invite_code)
-            await db.execute(
-                """INSERT INTO guardian_notifications
-                   (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
-                   VALUES ($1, $2, $3, 'urgent', '🚨 긴급: 대상자 확인 필요',
-                           '안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.', $4)""",
-                g["guardian_user_id"], user_id, invite_code, is_pushed,
-            )
+        await _save_notification_event(
+            db, user_id, invite_code,
+            "urgent", "🚨 긴급: 대상자 확인 필요",
+            "안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.",
+        )
+        await _push_to_guardians(
+            db, guardians, "urgent",
+            lambda token: push_urgent(token, user_id, invite_code=invite_code),
+        )
 
     elif has_caution:
-        # 2회 미수신 → 경고
         await create_alert(db, user_id, "warning", last_seen_dt, days_inactive=2)
-        for g in guardians:
-            settings = await get_guardian_settings(db, g["guardian_user_id"])
-            if not should_send(settings, "warning"):
-                continue
-            is_pushed = False
-            if _should_push(settings, "warning"):
-                is_pushed = await push_warning(g["fcm_token"], user_id, invite_code=invite_code)
-            await db.execute(
-                """INSERT INTO guardian_notifications
-                   (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
-                   VALUES ($1, $2, $3, 'warning', '⚠ 안부 확인',
-                           '대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다.', $4)""",
-                g["guardian_user_id"], user_id, invite_code, is_pushed,
-            )
+        await _save_notification_event(
+            db, user_id, invite_code,
+            "warning", "⚠ 안부 확인",
+            "대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다.",
+        )
+        await _push_to_guardians(
+            db, guardians, "warning",
+            lambda token: push_warning(token, user_id, invite_code=invite_code),
+        )
 
     else:
-        # 1회 미수신 → 주의
         await create_alert(db, user_id, "caution", last_seen_dt)
-        for g in guardians:
-            settings = await get_guardian_settings(db, g["guardian_user_id"])
-            if not should_send(settings, "caution"):
-                continue
-            is_pushed = False
-            if _should_push(settings, "caution"):
-                is_pushed = await push_caution(g["fcm_token"], user_id, invite_code=invite_code)
-            await db.execute(
-                """INSERT INTO guardian_notifications
-                   (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
-                   VALUES ($1, $2, $3, 'caution', '⚠ 안부 확인 필요',
-                           '오늘 대상자의 안부 확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.', $4)""",
-                g["guardian_user_id"], user_id, invite_code, is_pushed,
-            )
+        await _save_notification_event(
+            db, user_id, invite_code,
+            "caution", "⚠ 안부 확인 필요",
+            "오늘 대상자의 안부 확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.",
+        )
+        await _push_to_guardians(
+            db, guardians, "caution",
+            lambda token: push_caution(token, user_id, invite_code=invite_code),
+        )
 
 
 async def _escalate_urgent_if_needed(
@@ -190,43 +143,37 @@ async def _escalate_urgent_if_needed(
 ) -> None:
     """긴급 등급 기존 경고 업데이트 + 2차 보호자 발송"""
     from services.push_service import push_urgent_secondary
-    # days_inactive 증가
     await db.execute(
         """UPDATE alerts SET days_inactive = days_inactive + 1
            WHERE subject_user_id = $1 AND alert_level = 'urgent' AND status = 'active'""",
         user_id,
     )
-    # 모든 보호자에게 2차 발송 (긴급은 DND 무관 — _should_push 항상 True)
-    for g in guardians:
-        settings = await get_guardian_settings(db, g["guardian_user_id"])
-        if not should_send(settings, "urgent"):
-            continue
-        is_pushed = False
-        if _should_push(settings, "urgent"):
-            is_pushed = await push_urgent_secondary(g["fcm_token"], user_id, invite_code=invite_code)
-        await db.execute(
-            """INSERT INTO guardian_notifications
-               (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
-               VALUES ($1, $2, $3, 'urgent', '🚨 긴급: 대상자 확인 필요',
-                       '안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.', $4)""",
-            g["guardian_user_id"], user_id, invite_code, is_pushed,
-        )
+    await _save_notification_event(
+        db, user_id, invite_code,
+        "urgent", "🚨 긴급: 대상자 확인 필요",
+        "안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.",
+    )
+    await _push_to_guardians(
+        db, guardians, "urgent",
+        lambda token: push_urgent_secondary(token, user_id, invite_code=invite_code),
+    )
 
 
 # ─────────────────────────────────────────────────────────────
-# 3. 당일 보호자 알림 자정 일괄 삭제 (매일 00:00 KST)
+# 3. 당일 알림 자정 일괄 삭제 (매일 00:00 KST)
 # ─────────────────────────────────────────────────────────────
 
-async def job_cleanup_guardian_notifications() -> None:
-    """보호자별 timezone 기준 어제 알림 일괄 삭제.
-    각 보호자의 로컬 자정 UTC를 계산하여 그 이전 알림만 삭제."""
+async def job_cleanup_notifications() -> None:
+    """전날 알림 일괄 삭제 — notification_events는 대상자 기준이므로
+    대상자 기기 timezone 기준 자정 이전 알림 삭제."""
     from database import get_pool
     async with get_pool().acquire() as db:
+        # 대상자별 timezone 조회
         rows = await db.fetch(
-            """SELECT DISTINCT gn.guardian_user_id,
+            """SELECT DISTINCT ne.subject_user_id,
                       COALESCE(d.timezone, 'Asia/Seoul') AS tz
-               FROM guardian_notifications gn
-               LEFT JOIN devices d ON d.user_id = gn.guardian_user_id"""
+               FROM notification_events ne
+               LEFT JOIN devices d ON d.user_id = ne.subject_user_id"""
         )
         total_deleted = 0
         for row in rows:
@@ -237,8 +184,8 @@ async def job_cleanup_guardian_notifications() -> None:
             midnight_local = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
             midnight_utc = midnight_local.astimezone(timezone.utc)
             result = await db.execute(
-                "DELETE FROM guardian_notifications WHERE guardian_user_id = $1 AND created_at < $2",
-                row["guardian_user_id"], midnight_utc,
+                "DELETE FROM notification_events WHERE subject_user_id = $1 AND created_at < $2",
+                row["subject_user_id"], midnight_utc,
             )
             count = int(result.split()[-1]) if result else 0
             total_deleted += count
@@ -303,6 +250,7 @@ async def job_cleanup_orphan_subjects() -> None:
                 )
 
             await db.execute("DELETE FROM alerts WHERE subject_user_id = $1", user_id)
+            await db.execute("DELETE FROM notification_events WHERE subject_user_id = $1", user_id)
             await db.execute("DELETE FROM devices WHERE user_id = $1", user_id)
             await db.execute("DELETE FROM users WHERE id = $1", user_id)
 
@@ -330,8 +278,8 @@ async def job_cleanup_old_logs() -> None:
 def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(job_heartbeat_check, CronTrigger(second=0), id="heartbeat_check", replace_existing=True)
     logger.info("스케줄러 등록: Heartbeat 미수신 체크 — 매 분 정각 실행")
-    scheduler.add_job(job_cleanup_guardian_notifications, CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="cleanup_guardian_noti", replace_existing=True)
-    logger.info("스케줄러 등록: 보호자 알림 자정 정리 — 매일 00:00 KST")
+    scheduler.add_job(job_cleanup_notifications, CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="cleanup_noti", replace_existing=True)
+    logger.info("스케줄러 등록: 알림 자정 정리 — 매일 00:00 KST")
     scheduler.add_job(job_subscription_expire_check, CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="sub_expire", replace_existing=True)
     logger.info("스케줄러 등록: 구독 만료 체크 — 매일 00:00 KST")
     scheduler.add_job(job_cleanup_orphan_subjects, CronTrigger(hour=3, minute=0, timezone="Asia/Seoul"), id="cleanup_subjects", replace_existing=True)

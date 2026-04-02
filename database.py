@@ -138,19 +138,17 @@ ON CONFLICT DO NOTHING
 """)
 
     await conn.execute("""
-CREATE TABLE IF NOT EXISTS guardian_notifications (
+CREATE TABLE IF NOT EXISTS notification_events (
     id                  SERIAL PRIMARY KEY,
-    guardian_user_id    INTEGER NOT NULL REFERENCES users(id),
     subject_user_id     INTEGER NOT NULL,
     invite_code         TEXT,
     alert_level         TEXT NOT NULL,
     title               TEXT NOT NULL,
     body                TEXT NOT NULL,
-    is_push_sent        BOOLEAN NOT NULL DEFAULT FALSE,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )
 """)
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_guardian_noti_guardian ON guardian_notifications (guardian_user_id, created_at DESC)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_ne_subject_created ON notification_events (subject_user_id, created_at DESC)")
 
     # last_steps 컬럼 마이그레이션 (기존 DB 대응)
     await conn.execute("""

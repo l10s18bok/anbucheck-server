@@ -182,6 +182,8 @@ async def clear_all_alerts(
 
 async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int) -> list[str]:
     """heartbeat 수신 시 활성 경고 해소 처리, 보호자 Push 발송 (DND 적용)"""
+    from services.heartbeat_service import _save_notification_event, _get_active_guardians, _get_invite_code, _push_to_guardians
+
     active = await db.fetch(
         "SELECT a.id, a.alert_level FROM alerts a WHERE a.subject_user_id = $1 AND a.status = 'active'",
         subject_user_id,
@@ -202,30 +204,17 @@ async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int) ->
     if not bool(set(resolved_levels) & {"caution", "warning", "urgent"}):
         return resolved_levels
 
-    guardians = await db.fetch(
-        """SELECT g.guardian_user_id, d.fcm_token FROM guardians g
-           JOIN devices d ON d.user_id = g.guardian_user_id
-           WHERE g.subject_user_id = $1 AND d.fcm_token IS NOT NULL""",
-        subject_user_id,
+    invite_code = await _get_invite_code(db, subject_user_id)
+    guardians = await _get_active_guardians(db, subject_user_id)
+
+    await _save_notification_event(
+        db, subject_user_id, invite_code,
+        "info", "✅ 안부 확인", "대상자의 안부 확인이 정상 복귀되었습니다.",
     )
-
-    # 대상자 invite_code 조회
-    invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", subject_user_id)
-    invite_code = invite_row["invite_code"] if invite_row else None
-
-    for guardian in guardians:
-        settings = await get_guardian_settings(db, guardian["guardian_user_id"])
-        if not should_send(settings, "info"):
-            continue
-        is_pushed = False
-        if should_push(settings, "info"):  # DND 아닐 때만 Push 발송
-            is_pushed = await push_service.push_resolved(guardian["fcm_token"], subject_user_id, invite_code=invite_code)
-        await db.execute(
-            """INSERT INTO guardian_notifications
-               (guardian_user_id, subject_user_id, invite_code, alert_level, title, body, is_push_sent)
-               VALUES ($1, $2, $3, 'info', '✅ 안부 확인', '대상자의 안부 확인이 정상 복귀되었습니다.', $4)""",
-            guardian["guardian_user_id"], subject_user_id, invite_code, is_pushed,
-        )
+    await _push_to_guardians(
+        db, guardians, "info",
+        lambda token: push_service.push_resolved(token, subject_user_id, invite_code=invite_code),
+    )
 
     return resolved_levels
 

@@ -5,6 +5,7 @@ import asyncpg
 
 from database import get_db
 from middleware.auth import require_guardian
+from services.alert_service import get_guardian_settings, should_send
 
 router = APIRouter(prefix="/api/v1", tags=["notifications"])
 
@@ -33,35 +34,46 @@ async def get_notifications(
     user=Depends(require_guardian),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    """당일 보호자 알림 목록 조회 (시간순)
+    """당일 알림 목록 조회 — 보호자에 연결된 대상자의 notification_events를
+    보호자 알림 설정으로 필터링하여 반환.
     헤더 X-Timezone-Offset: +09:00 형식으로 클라이언트 타임존 전달.
     """
+    guardian_user_id = user["user_id"]
     utc_offset = request.headers.get("X-Timezone-Offset")
     today_start = _today_utc_start(utc_offset)
 
+    # 보호자 알림 설정 조회
+    settings = await get_guardian_settings(db, guardian_user_id)
+
+    # 보호자에 연결된 대상자의 당일 알림 조회
     rows = await db.fetch(
-        """SELECT id, subject_user_id, invite_code, alert_level, title, body, is_push_sent, created_at
-           FROM guardian_notifications
-           WHERE guardian_user_id = $1
-             AND created_at >= $2
-           ORDER BY created_at ASC""",
-        user["user_id"],
+        """SELECT e.id, e.subject_user_id, e.invite_code,
+                  e.alert_level, e.title, e.body, e.created_at
+           FROM notification_events e
+           WHERE e.subject_user_id IN (
+               SELECT g.subject_user_id FROM guardians g
+               WHERE g.guardian_user_id = $1
+           )
+             AND e.created_at >= $2
+           ORDER BY e.created_at ASC""",
+        guardian_user_id,
         today_start,
     )
 
-    notifications = [
-        {
+    # 보호자 설정에 따라 필터링
+    notifications = []
+    for row in rows:
+        if not should_send(settings, row["alert_level"]):
+            continue
+        notifications.append({
             "id": row["id"],
             "subject_user_id": row["subject_user_id"],
             "invite_code": row["invite_code"],
             "alert_level": row["alert_level"],
             "title": row["title"],
             "body": row["body"],
-            "is_push_sent": row["is_push_sent"],
             "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-        }
-        for row in rows
-    ]
+        })
 
     return {"notifications": notifications}
 
@@ -72,15 +84,19 @@ async def delete_all_notifications(
     user=Depends(require_guardian),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    """당일 보호자 알림 전체 삭제"""
+    """당일 알림 전체 삭제 — 보호자에 연결된 대상자의 notification_events 삭제"""
+    guardian_user_id = user["user_id"]
     utc_offset = request.headers.get("X-Timezone-Offset")
     today_start = _today_utc_start(utc_offset)
 
     result = await db.execute(
-        """DELETE FROM guardian_notifications
-           WHERE guardian_user_id = $1
+        """DELETE FROM notification_events
+           WHERE subject_user_id IN (
+               SELECT g.subject_user_id FROM guardians g
+               WHERE g.guardian_user_id = $1
+           )
              AND created_at >= $2""",
-        user["user_id"],
+        guardian_user_id,
         today_start,
     )
     deleted_count = int(result.split()[-1]) if result else 0

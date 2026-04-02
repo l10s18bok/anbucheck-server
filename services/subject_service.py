@@ -108,10 +108,6 @@ async def unlink_subject(db: asyncpg.Connection, guardian_id: int, guardian_user
     subject_user_id = row["subject_user_id"]
 
     await db.execute("DELETE FROM guardians WHERE id = $1", guardian_id)
-    await db.execute(
-        "DELETE FROM guardian_notifications WHERE guardian_user_id = $1 AND subject_user_id = $2",
-        guardian_user_id, subject_user_id,
-    )
 
 
 def _to_utc_str(dt) -> str | None:
