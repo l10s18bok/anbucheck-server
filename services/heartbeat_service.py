@@ -146,20 +146,9 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             else:
                 await _send_auto_report_to_guardians(db, user_id)
 
-        # 걸음수 정보 알림 — steps_delta 있을 때만 (자동 heartbeat만, 당일 1회)
-        if not manual and steps_delta is not None:
-            today_local_start = datetime.now(device_tz).replace(hour=0, minute=0, second=0, microsecond=0)
-            today_utc_start = today_local_start.astimezone(timezone.utc)
-            already_sent = await db.fetchval(
-                """SELECT 1 FROM notification_events
-                   WHERE subject_user_id = $1
-                     AND title = '👟 오늘 걸음수 정보'
-                     AND created_at >= $2
-                   LIMIT 1""",
-                user_id, today_utc_start,
-            )
-            if not already_sent:
-                await _save_steps_info_notification(db, user_id, steps_delta)
+        # 걸음수 정보 알림 — steps_delta 있을 때만
+        if steps_delta is not None:
+            await _save_steps_info_notification(db, user_id, steps_delta)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
         # PRD 4.6: suspicious=true 시 보호자에게 주의/경고 알림 발송
