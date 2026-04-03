@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     status          TEXT NOT NULL DEFAULT 'active',
     days_inactive   INTEGER NOT NULL DEFAULT 1,
     last_seen_at    TIMESTAMPTZ NOT NULL,
-    push_pending    INTEGER NOT NULL DEFAULT 0,
+    push_count      INTEGER NOT NULL DEFAULT 0,
     last_push_at    TIMESTAMPTZ,
     resolved_at     TIMESTAMPTZ,
     note            TEXT,
@@ -159,6 +159,25 @@ BEGIN
         WHERE table_name='devices' AND column_name='last_steps'
     ) THEN
         ALTER TABLE devices ADD COLUMN last_steps INTEGER;
+    END IF;
+END$$;
+""")
+
+    # push_pending → push_count 컬럼 마이그레이션 (기존 DB 대응)
+    await conn.execute("""
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='alerts' AND column_name='push_pending'
+    ) THEN
+        ALTER TABLE alerts RENAME COLUMN push_pending TO push_count;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='alerts' AND column_name='push_count'
+    ) THEN
+        ALTER TABLE alerts ADD COLUMN push_count INTEGER NOT NULL DEFAULT 0;
     END IF;
 END$$;
 """)

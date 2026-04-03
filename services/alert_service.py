@@ -212,7 +212,7 @@ async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int) ->
 
     await _save_notification_event(
         db, subject_user_id, invite_code,
-        "info", "✅ 안부 확인", "대상자의 안부 확인이 정상 복귀되었습니다.",
+        "info", "✅ 정상", "대상자의 안부가 정상적으로 확인되었습니다.",
     )
     await _push_to_guardians(
         db, guardians, "info",

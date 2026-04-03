@@ -137,40 +137,41 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
         invite_code = await _get_invite_code(db, user_id)
         guardians = await _get_active_guardians(db, user_id)
         if new_suspicious_count == 1:
-            # 1회 → 주의(caution) 등급
+            # 1회 → 주의(caution) 등급: 폰 사용 흔적 없음
             await alert_service.create_alert(db, user_id, "caution", now_dt)
             await _save_notification_event(
                 db, user_id, invite_code,
-                "caution", "⚠ 안부 확인 필요",
-                "오늘 대상자의 안부 확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.",
+                "caution", "⚠ 주의",
+                "안부는 수신되었으나 폰 사용 흔적이 없습니다. 직접 확인해 주세요.",
             )
             await _push_to_guardians(
                 db, guardians, "caution",
-                lambda token: push_service.push_caution(token, user_id, invite_code=invite_code),
+                lambda token: push_service.push_caution(token, user_id, invite_code=invite_code, reason="suspicious"),
             )
         elif new_suspicious_count == 2:
             # 2회 → 경고(warning) 등급
             await alert_service.create_alert(db, user_id, "warning", now_dt)
             await _save_notification_event(
                 db, user_id, invite_code,
-                "warning", "⚠ 안부 확인",
-                "대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다.",
+                "warning", "⚠ 경고",
+                "연속으로 안부 확인이 되지 않고 있습니다. 직접 확인이 필요합니다.",
             )
             await _push_to_guardians(
                 db, guardians, "warning",
                 lambda token: push_service.push_warning(token, user_id, invite_code=invite_code),
             )
         elif new_suspicious_count >= 3:
-            # 3회 이상 → 긴급(urgent) 등급 (매일 반복 발송)
-            await alert_service.create_alert(db, user_id, "urgent", now_dt, days_inactive=new_suspicious_count)
+            # 3회 이상 → 긴급(urgent) 등급
+            days = new_suspicious_count
+            await alert_service.create_alert(db, user_id, "urgent", now_dt, days_inactive=days)
             await _save_notification_event(
                 db, user_id, invite_code,
-                "urgent", "🚨 긴급: 대상자 확인 필요",
-                "안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.",
+                "urgent", "🚨 긴급",
+                f"{days}일간 안부 확인이 없습니다. 즉시 확인이 필요합니다.",
             )
             await _push_to_guardians(
                 db, guardians, "urgent",
-                lambda token: push_service.push_urgent(token, user_id, invite_code=invite_code),
+                lambda token: push_service.push_urgent(token, user_id, days=days, invite_code=invite_code),
             )
 
     # 배터리 < 20% → 보호자 정보 알림

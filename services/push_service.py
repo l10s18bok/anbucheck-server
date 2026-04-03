@@ -113,11 +113,15 @@ async def push_app_closed(fcm_token: str, subject_user_id: int) -> bool:
     )
 
 
-async def push_caution(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_caution(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, reason: str = "missing") -> bool:
+    if reason == "suspicious":
+        body = "안부는 수신되었으나 폰 사용 흔적이 없습니다. 직접 확인해 주세요."
+    else:
+        body = "오늘 예정된 안부 확인이 아직 없습니다. 직접 확인해 주세요."
     return await send_push(
         fcm_token,
-        title="⚠ 안부 확인 필요",
-        body="오늘 대상자의 안부 확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.",
+        title="⚠ 주의",
+        body=body,
         data={"type": "alert_caution", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -126,28 +130,28 @@ async def push_caution(fcm_token: str, subject_user_id: int, sound: Optional[str
 async def push_warning(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title="⚠ 안부 확인",
-        body="대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다.",
+        title="⚠ 경고",
+        body="연속으로 안부 확인이 되지 않고 있습니다. 직접 확인이 필요합니다.",
         data={"type": "alert_warning", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_urgent(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_urgent(fcm_token: str, subject_user_id: int, days: int = 3, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title="🚨 긴급: 대상자 확인 필요",
-        body="안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.",
+        title="🚨 긴급",
+        body=f"{days}일간 안부 확인이 없습니다. 즉시 확인이 필요합니다.",
         data={"type": "alert_urgent", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_urgent_secondary(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_urgent_secondary(fcm_token: str, subject_user_id: int, days: int = 3, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title="🚨 긴급: 대상자 확인 필요",
-        body="대상자의 안부 확인이 없으며 다른 보호자도 아직 확인하지 않았습니다. 즉시 확인이 필요합니다.",
+        title="🚨 긴급",
+        body=f"{days}일간 안부 확인이 없으며 다른 보호자도 아직 확인하지 않았습니다. 즉시 확인이 필요합니다.",
         data={"type": "alert_urgent", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -156,8 +160,8 @@ async def push_urgent_secondary(fcm_token: str, subject_user_id: int, sound: Opt
 async def push_resolved(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title="✅ 안부 확인",
-        body="대상자의 안부 확인이 정상 복귀되었습니다.",
+        title="✅ 정상",
+        body="대상자의 안부가 정상적으로 확인되었습니다.",
         data={"type": "alert_resolved", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )

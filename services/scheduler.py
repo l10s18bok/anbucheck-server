@@ -98,23 +98,23 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
         await _escalate_urgent_if_needed(db, user_id, last_seen_dt, guardians, invite_code)
 
     elif has_warning:
-        await create_alert(db, user_id, "urgent", last_seen_dt)
+        await create_alert(db, user_id, "urgent", last_seen_dt, days_inactive=3)
         await _save_notification_event(
             db, user_id, invite_code,
-            "urgent", "🚨 긴급: 대상자 확인 필요",
-            "안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.",
+            "urgent", "🚨 긴급",
+            "3일간 안부 확인이 없습니다. 즉시 확인이 필요합니다.",
         )
         await _push_to_guardians(
             db, guardians, "urgent",
-            lambda token: push_urgent(token, user_id, invite_code=invite_code),
+            lambda token: push_urgent(token, user_id, days=3, invite_code=invite_code),
         )
 
     elif has_caution:
         await create_alert(db, user_id, "warning", last_seen_dt, days_inactive=2)
         await _save_notification_event(
             db, user_id, invite_code,
-            "warning", "⚠ 안부 확인",
-            "대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다.",
+            "warning", "⚠ 경고",
+            "연속으로 안부 확인이 되지 않고 있습니다. 직접 확인이 필요합니다.",
         )
         await _push_to_guardians(
             db, guardians, "warning",
@@ -125,8 +125,8 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
         await create_alert(db, user_id, "caution", last_seen_dt)
         await _save_notification_event(
             db, user_id, invite_code,
-            "caution", "⚠ 안부 확인 필요",
-            "오늘 대상자의 안부 확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.",
+            "caution", "⚠ 주의",
+            "오늘 예정된 안부 확인이 아직 없습니다. 직접 확인해 주세요.",
         )
         await _push_to_guardians(
             db, guardians, "caution",
@@ -141,22 +141,28 @@ async def _escalate_urgent_if_needed(
     guardians: list,
     invite_code: str | None = None,
 ) -> None:
-    """긴급 등급 기존 경고 업데이트 + 2차 보호자 발송"""
+    """긴급 등급 기존 경고 업데이트 + push_count < 5이면 푸시 발송"""
     from services.push_service import push_urgent_secondary
-    await db.execute(
-        """UPDATE alerts SET days_inactive = days_inactive + 1
-           WHERE subject_user_id = $1 AND alert_level = 'urgent' AND status = 'active'""",
+    row = await db.fetchrow(
+        """UPDATE alerts SET days_inactive = days_inactive + 1, push_count = push_count + 1
+           WHERE subject_user_id = $1 AND alert_level = 'urgent' AND status = 'active'
+           RETURNING days_inactive, push_count""",
         user_id,
     )
+    days = row["days_inactive"] if row else 0
+    push_count = row["push_count"] if row else 0
+
     await _save_notification_event(
         db, user_id, invite_code,
-        "urgent", "🚨 긴급: 대상자 확인 필요",
-        "안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.",
+        "urgent", "🚨 긴급",
+        f"{days}일간 안부 확인이 없습니다. 즉시 확인이 필요합니다.",
     )
-    await _push_to_guardians(
-        db, guardians, "urgent",
-        lambda token: push_urgent_secondary(token, user_id, invite_code=invite_code),
-    )
+    # 푸시 발송은 최대 5회까지만
+    if push_count <= 5:
+        await _push_to_guardians(
+            db, guardians, "urgent",
+            lambda token: push_urgent_secondary(token, user_id, days=days, invite_code=invite_code),
+        )
 
 
 # ─────────────────────────────────────────────────────────────
