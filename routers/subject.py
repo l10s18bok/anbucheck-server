@@ -51,6 +51,7 @@ async def list_subjects(
                 device_id=s.get("device_id"),
                 heartbeat_hour=s.get("heartbeat_hour", 9),
                 heartbeat_minute=s.get("heartbeat_minute", 30),
+                battery_level=s.get("battery_level"),
             )
         )
     return SubjectListOut(

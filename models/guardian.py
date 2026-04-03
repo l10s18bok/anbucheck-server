@@ -21,6 +21,7 @@ class SubjectOut(BaseModel):
     device_id: Optional[str] = None
     heartbeat_hour: int = 9
     heartbeat_minute: int = 30
+    battery_level: Optional[int] = None
 
 
 class SubjectLinkOut(BaseModel):
