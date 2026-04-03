@@ -45,7 +45,7 @@ async def get_notifications(
     # 보호자 알림 설정 조회
     settings = await get_guardian_settings(db, guardian_user_id)
 
-    # 보호자에 연결된 대상자의 당일 알림 조회
+    # 보호자에 연결된 대상자의 당일 알림 조회 (해당 보호자가 삭제한 알림 제외)
     rows = await db.fetch(
         """SELECT e.id, e.subject_user_id, e.invite_code,
                   e.alert_level, e.title, e.body, e.created_at
@@ -55,6 +55,10 @@ async def get_notifications(
                WHERE g.guardian_user_id = $1
            )
              AND e.created_at >= $2
+             AND NOT EXISTS (
+               SELECT 1 FROM dismissed_notifications dn
+               WHERE dn.guardian_user_id = $1 AND dn.event_id = e.id
+             )
            ORDER BY e.created_at ASC""",
         guardian_user_id,
         today_start,
@@ -84,20 +88,26 @@ async def delete_all_notifications(
     user=Depends(require_guardian),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    """당일 알림 전체 삭제 — 보호자에 연결된 대상자의 notification_events 삭제"""
+    """당일 알림 전체 숨김 — 보호자별 dismissed_notifications에 기록 (다른 보호자에 영향 없음)"""
     guardian_user_id = user["user_id"]
     utc_offset = request.headers.get("X-Timezone-Offset")
     today_start = _today_utc_start(utc_offset)
 
     result = await db.execute(
-        """DELETE FROM notification_events
-           WHERE subject_user_id IN (
+        """INSERT INTO dismissed_notifications (guardian_user_id, event_id)
+           SELECT $1, e.id
+           FROM notification_events e
+           WHERE e.subject_user_id IN (
                SELECT g.subject_user_id FROM guardians g
                WHERE g.guardian_user_id = $1
            )
-             AND created_at >= $2""",
+             AND e.created_at >= $2
+             AND NOT EXISTS (
+               SELECT 1 FROM dismissed_notifications dn
+               WHERE dn.guardian_user_id = $1 AND dn.event_id = e.id
+             )""",
         guardian_user_id,
         today_start,
     )
-    deleted_count = int(result.split()[-1]) if result else 0
-    return {"deleted_count": deleted_count}
+    dismissed_count = int(result.split()[-1]) if result else 0
+    return {"deleted_count": dismissed_count}

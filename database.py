@@ -164,6 +164,17 @@ END$$;
 """)
 
     await conn.execute("""
+CREATE TABLE IF NOT EXISTS dismissed_notifications (
+    id                  SERIAL PRIMARY KEY,
+    guardian_user_id    INTEGER NOT NULL REFERENCES users(id),
+    event_id            INTEGER NOT NULL REFERENCES notification_events(id) ON DELETE CASCADE,
+    dismissed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guardian_user_id, event_id)
+)
+""")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_dn_guardian ON dismissed_notifications (guardian_user_id)")
+
+    await conn.execute("""
 CREATE TABLE IF NOT EXISTS guardian_notification_settings (
     guardian_user_id  INTEGER PRIMARY KEY REFERENCES users(id),
     all_enabled       BOOLEAN NOT NULL DEFAULT TRUE,
