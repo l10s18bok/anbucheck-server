@@ -162,6 +162,49 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
                 await _save_steps_info_notification(db, user_id, steps_delta)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
+        # PRD 4.6: suspicious=true 시 보호자에게 주의/경고 알림 발송
+        invite_code = await _get_invite_code(db, user_id)
+        guardians = await _get_active_guardians(db, user_id)
+        if new_suspicious_count == 1:
+            # 1회 → 주의(caution) 등급 (중복 방지)
+            if not await alert_service.has_active_alert(db, user_id, "caution"):
+                await alert_service.create_alert(db, user_id, "caution", now_dt)
+                await _save_notification_event(
+                    db, user_id, invite_code,
+                    "caution", "⚠ 안부 확인 필요",
+                    "오늘 대상자의 안부 확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.",
+                )
+                await _push_to_guardians(
+                    db, guardians, "caution",
+                    lambda token: push_service.push_caution(token, user_id, invite_code=invite_code),
+                )
+        elif new_suspicious_count == 2:
+            # 2회 → 경고(warning) 등급 (warning/urgent 없을 때만)
+            has_warning = await alert_service.has_active_alert(db, user_id, "warning")
+            has_urgent = await alert_service.has_active_alert(db, user_id, "urgent")
+            if not has_warning and not has_urgent:
+                await alert_service.create_alert(db, user_id, "warning", now_dt)
+                await _save_notification_event(
+                    db, user_id, invite_code,
+                    "warning", "⚠ 안부 확인",
+                    "대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다.",
+                )
+                await _push_to_guardians(
+                    db, guardians, "warning",
+                    lambda token: push_service.push_warning(token, user_id, invite_code=invite_code),
+                )
+        elif new_suspicious_count >= 3:
+            # 3회 이상 → 긴급(urgent) 등급 (매일 반복 발송)
+            await alert_service.create_alert(db, user_id, "urgent", now_dt, days_inactive=new_suspicious_count)
+            await _save_notification_event(
+                db, user_id, invite_code,
+                "urgent", "🚨 긴급: 대상자 확인 필요",
+                "안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다.",
+            )
+            await _push_to_guardians(
+                db, guardians, "urgent",
+                lambda token: push_service.push_urgent(token, user_id, invite_code=invite_code),
+            )
 
     # 배터리 < 20% → 보호자 정보 알림 (1회만 발송, DND 적용)
     if battery_level is not None and battery_level < 20:
