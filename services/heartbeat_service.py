@@ -40,7 +40,8 @@ async def _get_active_guardians(db: asyncpg.Connection, subject_user_id: int) ->
            WHERE g.subject_user_id = $1
              AND s.plan != 'expired'
              AND s.expires_at > NOW()
-             AND d.fcm_token IS NOT NULL""",
+             AND d.fcm_token IS NOT NULL
+             AND d.fcm_token != ''""",
         subject_user_id,
     )
 

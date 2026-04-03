@@ -51,7 +51,7 @@ async def delete_me(
         guardians = await db.fetch(
             """SELECT d.fcm_token FROM guardians g
                JOIN devices d ON d.user_id = g.guardian_user_id
-               WHERE g.subject_user_id = $1 AND d.fcm_token IS NOT NULL""",
+               WHERE g.subject_user_id = $1 AND d.fcm_token IS NOT NULL AND d.fcm_token != ''""",
             user_id,
         )
         if guardians:
