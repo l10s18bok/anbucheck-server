@@ -1,5 +1,4 @@
 from datetime import datetime, timezone, timedelta
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import asyncio
 import logging
 
@@ -8,17 +7,10 @@ import asyncpg
 from services import alert_service, push_service
 from services.alert_service import get_guardian_settings, should_send, should_push
 
+
 logger = logging.getLogger(__name__)
 
 KST = timezone(timedelta(hours=9))
-
-
-def _device_tz(tz_str: str | None) -> ZoneInfo:
-    """devices.timezone 문자열 → ZoneInfo. 파싱 실패 시 Asia/Seoul 기본값."""
-    try:
-        return ZoneInfo(tz_str or "Asia/Seoul")
-    except (ZoneInfoNotFoundError, Exception):
-        return ZoneInfo("Asia/Seoul")
 
 
 async def _save_notification_event(
@@ -95,16 +87,6 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     battery_level = payload.get("battery_level")
     manual        = payload.get("manual", False)
 
-    # 오늘(기기 timezone) 이미 heartbeat를 보낸 경우 suspicious 판정 무시
-    device_tz = _device_tz(device["timezone"])
-    if suspicious and not manual:
-        last_seen = device["last_seen"]
-        if last_seen is not None:
-            last_seen_date = last_seen.astimezone(device_tz).date()
-            today_local = datetime.now(device_tz).date()
-            if last_seen_date == today_local:
-                suspicious = False
-
     # devices 테이블 갱신
     new_suspicious_count = device["suspicious_count"] + 1 if suspicious else 0
     steps_delta = payload.get("steps_delta")
@@ -139,12 +121,11 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
 
     # 활성 경고 해소 — suspicious=false일 때만 "정상 복귀" 알림 발송
     if not suspicious:
-        resolved = await alert_service.resolve_active_alerts(db, user_id)
-        if not resolved:
-            if manual:
-                await _send_manual_report_to_guardians(db, user_id)
-            else:
-                await _send_auto_report_to_guardians(db, user_id)
+        await alert_service.resolve_active_alerts(db, user_id)
+        if manual:
+            await _send_manual_report_to_guardians(db, user_id)
+        else:
+            await _send_auto_report_to_guardians(db, user_id)
 
         # 걸음수 정보 알림 — steps_delta 있을 때만
         if steps_delta is not None:
@@ -155,33 +136,29 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
         invite_code = await _get_invite_code(db, user_id)
         guardians = await _get_active_guardians(db, user_id)
         if new_suspicious_count == 1:
-            # 1회 → 주의(caution) 등급 (중복 방지)
-            if not await alert_service.has_active_alert(db, user_id, "caution"):
-                await alert_service.create_alert(db, user_id, "caution", now_dt)
-                await _save_notification_event(
-                    db, user_id, invite_code,
-                    "caution", "⚠ 안부 확인 필요",
-                    "오늘 대상자의 안부 확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.",
-                )
-                await _push_to_guardians(
-                    db, guardians, "caution",
-                    lambda token: push_service.push_caution(token, user_id, invite_code=invite_code),
-                )
+            # 1회 → 주의(caution) 등급
+            await alert_service.create_alert(db, user_id, "caution", now_dt)
+            await _save_notification_event(
+                db, user_id, invite_code,
+                "caution", "⚠ 안부 확인 필요",
+                "오늘 대상자의 안부 확인이 아직 없습니다. 직접 안부를 확인해 보시기 바랍니다.",
+            )
+            await _push_to_guardians(
+                db, guardians, "caution",
+                lambda token: push_service.push_caution(token, user_id, invite_code=invite_code),
+            )
         elif new_suspicious_count == 2:
-            # 2회 → 경고(warning) 등급 (warning/urgent 없을 때만)
-            has_warning = await alert_service.has_active_alert(db, user_id, "warning")
-            has_urgent = await alert_service.has_active_alert(db, user_id, "urgent")
-            if not has_warning and not has_urgent:
-                await alert_service.create_alert(db, user_id, "warning", now_dt)
-                await _save_notification_event(
-                    db, user_id, invite_code,
-                    "warning", "⚠ 안부 확인",
-                    "대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다.",
-                )
-                await _push_to_guardians(
-                    db, guardians, "warning",
-                    lambda token: push_service.push_warning(token, user_id, invite_code=invite_code),
-                )
+            # 2회 → 경고(warning) 등급
+            await alert_service.create_alert(db, user_id, "warning", now_dt)
+            await _save_notification_event(
+                db, user_id, invite_code,
+                "warning", "⚠ 안부 확인",
+                "대상자의 오늘 안부 확인이 없습니다. 통신 불가 상태일 수 있습니다.",
+            )
+            await _push_to_guardians(
+                db, guardians, "warning",
+                lambda token: push_service.push_warning(token, user_id, invite_code=invite_code),
+            )
         elif new_suspicious_count >= 3:
             # 3회 이상 → 긴급(urgent) 등급 (매일 반복 발송)
             await alert_service.create_alert(db, user_id, "urgent", now_dt, days_inactive=new_suspicious_count)
@@ -195,11 +172,10 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
                 lambda token: push_service.push_urgent(token, user_id, invite_code=invite_code),
             )
 
-    # 배터리 < 20% → 보호자 정보 알림 (1회만 발송, DND 적용)
+    # 배터리 < 20% → 보호자 정보 알림
     if battery_level is not None and battery_level < 20:
-        if not await alert_service.has_active_alert(db, user_id, "info"):
-            await alert_service.create_alert(db, user_id, "info", now_dt)
-            await _send_battery_low_to_guardians(db, user_id)
+        await alert_service.create_alert(db, user_id, "info", now_dt)
+        await _send_battery_low_to_guardians(db, user_id)
 
     heartbeat_hour = device["heartbeat_hour"]
     heartbeat_minute = device["heartbeat_minute"]
