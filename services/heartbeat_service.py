@@ -128,9 +128,9 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
         else:
             await _send_auto_report_to_guardians(db, user_id)
 
-        # 걸음수 정보 알림 — steps_delta 있을 때만
-        if steps_delta is not None:
-            await _save_steps_info_notification(db, user_id, steps_delta)
+        # 활동 감지 알림 — steps_delta > 0일 때만
+        if steps_delta is not None and steps_delta > 0:
+            await _save_steps_info_notification(db, user_id)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
         # PRD 4.6: suspicious=true 시 보호자에게 주의/경고 알림 발송
@@ -194,18 +194,12 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
 async def _save_steps_info_notification(
     db: asyncpg.Connection,
     user_id: int,
-    today_steps: int,
 ) -> None:
-    """오늘 걸음수 정보 알림 — 이벤트 1건 저장 (Push 없음)"""
-    if today_steps == 0:
-        body = "건강을 위해 가벼운 산책이 필요해보입니다.(걸음수: 0보)"
-    else:
-        body = f"오늘은 {today_steps:,}보를 걸었습니다."
-
+    """활동 감지 알림 — 이벤트 1건 저장 (Push 없음)"""
     invite_code = await _get_invite_code(db, user_id)
     await _save_notification_event(
         db, user_id, invite_code,
-        "health", "👟 오늘 걸음수 정보", body,
+        "health", "🚶 활동 감지", "오늘 정상적인 활동이 확인되었습니다",
     )
 
 
