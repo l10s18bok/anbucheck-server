@@ -44,7 +44,7 @@ async def link_subject(db: asyncpg.Connection, guardian_user_id: int, invite_cod
 
     last_seen = await _get_last_seen(db, subject_user_id)
     active_alert = await _get_active_alert(db, subject_user_id)
-    subject_status = "warning" if active_alert else "normal"
+    subject_status = active_alert["alert_level"] if active_alert else "normal"
 
     return {
         "guardian_id": guardian_id,
@@ -82,7 +82,7 @@ async def get_subjects(db: asyncpg.Connection, guardian_user_id: int) -> dict:
                 "user_id": row["user_id"],
                 "invite_code": row["invite_code"],
                 "last_seen": _to_utc_str(row["last_seen"]),
-                "status": "warning" if active_alert else "normal",
+                "status": active_alert["alert_level"] if active_alert else "normal",
                 "alert": active_alert,
                 "device_id": row["device_id"],
                 "heartbeat_hour": row["heartbeat_hour"] if row["heartbeat_hour"] is not None else 9,
@@ -130,9 +130,9 @@ async def _get_last_seen(db: asyncpg.Connection, subject_user_id: int) -> str | 
 
 async def _get_active_alert(db: asyncpg.Connection, subject_user_id: int) -> dict | None:
     row = await db.fetchrow(
-        "SELECT id, days_inactive FROM alerts WHERE subject_user_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+        "SELECT id, alert_level, days_inactive FROM alerts WHERE subject_user_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
         subject_user_id,
     )
     if row is None:
         return None
-    return {"id": row["id"], "days_inactive": row["days_inactive"]}
+    return {"id": row["id"], "alert_level": row["alert_level"], "days_inactive": row["days_inactive"]}
