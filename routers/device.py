@@ -38,6 +38,14 @@ async def get_my_device(
             user["user_id"],
         )
 
+    # 구독 플랜 조회 (보호자 본인만)
+    sub_plan = None
+    if user["role"] == "guardian":
+        sub_plan = await db.fetchval(
+            "SELECT plan FROM subscriptions WHERE user_id = $1 ORDER BY expires_at DESC LIMIT 1",
+            user["user_id"],
+        )
+
     # 연결된 보호자 수
     guardian_count = await db.fetchval(
         "SELECT COUNT(*) FROM guardians WHERE subject_user_id = $1",
@@ -50,6 +58,7 @@ async def get_my_device(
         heartbeat_minute=row["heartbeat_minute"],
         last_seen=row["last_seen"].isoformat() if row["last_seen"] else None,
         subscription_active=sub_active or False,
+        subscription_plan=sub_plan,
         guardian_count=guardian_count,
     )
 
