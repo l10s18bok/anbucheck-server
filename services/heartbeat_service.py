@@ -216,7 +216,7 @@ async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -
 
     await _save_notification_event(
         db, user_id, invite_code,
-        "info", "🔋 대상자 폰 배터리 부족",
+        "info", "🔋 폰 배터리 부족",
         "폰 배터리가 20% 미만입니다. 충전이 필요할 수 있습니다.",
     )
     await _push_to_guardians(

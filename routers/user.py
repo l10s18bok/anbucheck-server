@@ -58,8 +58,8 @@ async def delete_me(
             coros = [
                 push_service.send_push(
                     g["fcm_token"],
-                    "대상자 탈퇴 알림",
-                    f"대상자({invite_code})가 서비스를 탈퇴했습니다.",
+                    "탈퇴 알림",
+                    f"보호 대상자({invite_code})가 서비스를 탈퇴했습니다.",
                     data={"type": "subject_withdrawn", "invite_code": invite_code},
                 )
                 for g in guardians

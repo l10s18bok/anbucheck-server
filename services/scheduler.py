@@ -81,7 +81,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
             await _save_notification_event(
                 db, user_id, invite_code,
                 "info", "🔋 배터리 방전 추정",
-                "대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 충전 후 자동으로 정상 복귀됩니다.",
+                "보호 대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 충전 후 자동으로 정상 복귀됩니다.",
             )
             await _push_to_guardians(
                 db, guardians, "info",

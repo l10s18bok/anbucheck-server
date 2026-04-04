@@ -87,7 +87,7 @@ def _is_token_error(exc: Exception) -> bool:
 async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title="🔋 대상자 폰 배터리 부족",
+        title="🔋 폰 배터리 부족",
         body="폰 배터리가 20% 미만입니다. 충전이 필요할 수 있습니다.",
         data={"type": "alert_info", "reason": "battery_low", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
@@ -98,19 +98,11 @@ async def push_battery_dead(fcm_token: str, subject_user_id: int, battery_level:
     return await send_push(
         fcm_token,
         title="🔋 배터리 방전 추정",
-        body=f"대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 마지막 배터리 잔량: {battery_level}%. 충전 후 자동으로 정상 복귀됩니다.",
+        body=f"보호 대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 마지막 배터리 잔량: {battery_level}%. 충전 후 자동으로 정상 복귀됩니다.",
         data={"type": "alert_info", "reason": "battery_dead", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
-
-async def push_app_closed(fcm_token: str, subject_user_id: int) -> bool:
-    return await send_push(
-        fcm_token,
-        title="📱 대상자 앱 확인 필요",
-        body="대상자의 앱이 종료된 것 같습니다. 앱을 다시 열어달라고 안내해 주세요.",
-        data={"type": "alert_info", "reason": "app_closed", "subject_user_id": str(subject_user_id)},
-    )
 
 
 async def push_caution(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, reason: str = "missing") -> bool:
@@ -161,7 +153,7 @@ async def push_resolved(fcm_token: str, subject_user_id: int, sound: Optional[st
     return await send_push(
         fcm_token,
         title="✅ 정상",
-        body="대상자의 안부가 정상적으로 확인되었습니다.",
+        body="보호 대상자의 안부가 정상적으로 확인되었습니다.",
         data={"type": "alert_resolved", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
