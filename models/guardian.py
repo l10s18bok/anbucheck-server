@@ -33,3 +33,4 @@ class SubjectListOut(BaseModel):
     subjects: list[SubjectOut]
     max_subjects: int
     can_add_more: bool
+    subscription_active: bool = True

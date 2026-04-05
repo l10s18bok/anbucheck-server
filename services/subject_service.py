@@ -91,10 +91,18 @@ async def get_subjects(db: asyncpg.Connection, guardian_user_id: int) -> dict:
             }
         )
 
+    # 보호자 구독 상태 조회
+    sub_row = await db.fetchrow(
+        "SELECT plan FROM subscriptions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+        guardian_user_id,
+    )
+    subscription_active = sub_row["plan"] in ("free_trial", "yearly") if sub_row else False
+
     return {
         "subjects": subjects,
         "max_subjects": MAX_SUBJECTS,
         "can_add_more": len(subjects) < MAX_SUBJECTS,
+        "subscription_active": subscription_active,
     }
 
 

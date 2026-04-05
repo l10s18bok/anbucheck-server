@@ -58,6 +58,7 @@ async def list_subjects(
         subjects=subjects,
         max_subjects=result["max_subjects"],
         can_add_more=result["can_add_more"],
+        subscription_active=result["subscription_active"],
     )
 
 
