@@ -3,6 +3,7 @@ import asyncio
 import logging
 
 import asyncpg
+from zoneinfo import ZoneInfo
 
 from services import alert_service, push_service
 from services.alert_service import get_guardian_settings, should_send, should_push
@@ -130,7 +131,12 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
 
         # 활동 감지 알림 — steps_delta > 0일 때만
         if steps_delta is not None and steps_delta > 0:
-            await _save_steps_info_notification(db, user_id)
+            await _save_steps_info_notification(
+                db, user_id, steps_delta,
+                prev_seen=device["last_seen"],
+                now_dt=now_dt,
+                tz_name=device["timezone"],
+            )
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
         # PRD 4.6: suspicious=true 시 보호자에게 주의/경고 알림 발송
@@ -191,15 +197,36 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     }
 
 
+def _format_ampm(dt: datetime) -> str:
+    """datetime → '오전 09:30' / '오후 02:15' 형식"""
+    hour = dt.hour
+    period = "오전" if hour < 12 else "오후"
+    h12 = hour if hour <= 12 else hour - 12
+    if h12 == 0:
+        h12 = 12
+    return f"{period} {h12:02d}:{dt.minute:02d}"
+
+
 async def _save_steps_info_notification(
     db: asyncpg.Connection,
     user_id: int,
+    steps_delta: int,
+    prev_seen: datetime,
+    now_dt: datetime,
+    tz_name: str,
 ) -> None:
     """활동 감지 알림 — 이벤트 1건 저장 (Push 없음)"""
     invite_code = await _get_invite_code(db, user_id)
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("Asia/Seoul")
+    prev_local = prev_seen.astimezone(tz)
+    now_local = now_dt.astimezone(tz)
+    body = f"{prev_local.month}/{prev_local.day} {_format_ampm(prev_local)} ~ {now_local.month}/{now_local.day} {_format_ampm(now_local)} 사이 {steps_delta:,}보를 걸으셨습니다."
     await _save_notification_event(
         db, user_id, invite_code,
-        "health", "🚶 활동 감지", "오늘 정상적인 활동이 확인되었습니다",
+        "health", "🚶 활동 정보", body,
     )
 
 
