@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 import asyncpg
 
 from database import get_db
@@ -14,6 +14,21 @@ from i18n.messages import get_message
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
+
+
+@router.get("/check-device")
+async def check_device(
+    device_id: str = Query(..., description="기기 고유 ID"),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    """기존 등록 여부 확인 (순수 조회, 데이터 수정 없음)"""
+    row = await db.fetchrow(
+        "SELECT u.role FROM devices d JOIN users u ON u.id = d.user_id WHERE d.device_id = $1",
+        device_id,
+    )
+    if row is None:
+        return {"exists": False}
+    return {"exists": True, "role": row["role"]}
 
 
 @router.post("", response_model=UserRegisterOut, status_code=201)
