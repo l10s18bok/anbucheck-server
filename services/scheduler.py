@@ -18,6 +18,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 import asyncpg
 
+from i18n.messages import get_message
 from services.alert_service import get_guardian_settings, should_send, should_push
 from services.heartbeat_service import _save_notification_event, _get_active_guardians, _get_invite_code, _push_to_guardians
 
@@ -80,12 +81,15 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
             await create_alert(db, user_id, "info", last_seen_dt)
             await _save_notification_event(
                 db, user_id, invite_code,
-                "info", "🔋 배터리 방전 추정",
-                "보호 대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 충전 후 자동으로 정상 복귀됩니다.",
+                "info",
+                get_message("ko_KR", "push_battery_dead_title"),
+                get_message("ko_KR", "push_battery_dead_body", battery_level=battery_level),
+                message_key="battery_dead",
+                message_params={"battery_level": battery_level},
             )
             await _push_to_guardians(
                 db, guardians, "info",
-                lambda token: push_battery_dead(token, user_id, battery_level, invite_code=invite_code),
+                lambda token, locale: push_battery_dead(token, user_id, battery_level, invite_code=invite_code, locale=locale),
             )
         return
 
@@ -101,36 +105,43 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
         await create_alert(db, user_id, "urgent", last_seen_dt, days_inactive=3)
         await _save_notification_event(
             db, user_id, invite_code,
-            "urgent", "🚨 긴급",
-            "3일간 안부 확인이 없습니다. 즉시 확인이 필요합니다.",
+            "urgent",
+            get_message("ko_KR", "push_urgent_title"),
+            get_message("ko_KR", "push_urgent_body", days=3),
+            message_key="urgent",
+            message_params={"days": 3},
         )
         await _push_to_guardians(
             db, guardians, "urgent",
-            lambda token: push_urgent(token, user_id, days=3, invite_code=invite_code),
+            lambda token, locale: push_urgent(token, user_id, days=3, invite_code=invite_code, locale=locale),
         )
 
     elif has_caution:
         await create_alert(db, user_id, "warning", last_seen_dt, days_inactive=2)
         await _save_notification_event(
             db, user_id, invite_code,
-            "warning", "⚠ 경고",
-            "연속으로 안부 확인이 되지 않고 있습니다. 직접 확인이 필요합니다.",
+            "warning",
+            get_message("ko_KR", "push_warning_title"),
+            get_message("ko_KR", "push_warning_body"),
+            message_key="warning",
         )
         await _push_to_guardians(
             db, guardians, "warning",
-            lambda token: push_warning(token, user_id, invite_code=invite_code),
+            lambda token, locale: push_warning(token, user_id, invite_code=invite_code, locale=locale),
         )
 
     else:
         await create_alert(db, user_id, "caution", last_seen_dt)
         await _save_notification_event(
             db, user_id, invite_code,
-            "caution", "⚠ 주의",
-            "오늘 예정된 안부 확인이 아직 없습니다. 직접 확인해 주세요.",
+            "caution",
+            get_message("ko_KR", "push_caution_title"),
+            get_message("ko_KR", "push_caution_missing_body"),
+            message_key="caution_missing",
         )
         await _push_to_guardians(
             db, guardians, "caution",
-            lambda token: push_caution(token, user_id, invite_code=invite_code),
+            lambda token, locale: push_caution(token, user_id, invite_code=invite_code, locale=locale),
         )
 
 
@@ -154,14 +165,17 @@ async def _escalate_urgent_if_needed(
 
     await _save_notification_event(
         db, user_id, invite_code,
-        "urgent", "🚨 긴급",
-        f"{days}일간 안부 확인이 없습니다. 즉시 확인이 필요합니다.",
+        "urgent",
+        get_message("ko_KR", "push_urgent_title"),
+        get_message("ko_KR", "push_urgent_body", days=days),
+        message_key="urgent",
+        message_params={"days": days},
     )
     # 푸시 발송은 최대 5회까지만
     if push_count <= 5:
         await _push_to_guardians(
             db, guardians, "urgent",
-            lambda token: push_urgent_secondary(token, user_id, days=days, invite_code=invite_code),
+            lambda token, locale, d=days: push_urgent_secondary(token, user_id, days=d, invite_code=invite_code, locale=locale),
         )
 
 
@@ -206,7 +220,7 @@ async def job_subscription_expire_check() -> None:
     from database import get_pool
     async with get_pool().acquire() as db:
         expired = await db.fetch(
-            """SELECT u.id AS user_id, d.fcm_token
+            """SELECT u.id AS user_id, d.fcm_token, d.locale
                FROM users u
                JOIN subscriptions s ON u.id = s.user_id
                LEFT JOIN devices d ON d.user_id = u.id
@@ -223,7 +237,8 @@ async def job_subscription_expire_check() -> None:
                 row["user_id"],
             )
             if row["fcm_token"]:
-                await push_subscription_expired(row["fcm_token"])
+                locale = row.get("locale") or "ko_KR"
+                await push_subscription_expired(row["fcm_token"], locale=locale)
 
         if expired:
             logger.info(f"구독 만료 처리: {len(expired)}명")

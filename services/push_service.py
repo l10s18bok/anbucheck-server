@@ -4,6 +4,8 @@ import logging
 import os
 from typing import Optional
 
+from i18n.messages import get_message
+
 logger = logging.getLogger(__name__)
 
 _firebase_app = None
@@ -82,107 +84,106 @@ def _is_token_error(exc: Exception) -> bool:
     return "registration-token-not-registered" in msg or "invalid-registration-token" in msg
 
 
-# 경고 Push 메시지 헬퍼
+# ── locale 기반 경고 Push 메시지 헬퍼 ──
 
-async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
-        title="🔋 폰 배터리 부족",
-        body="폰 배터리가 20% 미만입니다. 충전이 필요할 수 있습니다.",
+        title=get_message(locale, "push_battery_low_title"),
+        body=get_message(locale, "push_battery_low_body"),
         data={"type": "alert_info", "reason": "battery_low", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_battery_dead(fcm_token: str, subject_user_id: int, battery_level: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_battery_dead(fcm_token: str, subject_user_id: int, battery_level: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
-        title="🔋 배터리 방전 추정",
-        body=f"보호 대상자의 폰이 배터리 방전으로 꺼진 것 같습니다. 마지막 배터리 잔량: {battery_level}%. 충전 후 자동으로 정상 복귀됩니다.",
+        title=get_message(locale, "push_battery_dead_title"),
+        body=get_message(locale, "push_battery_dead_body", battery_level=battery_level),
         data={"type": "alert_info", "reason": "battery_dead", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-
-async def push_caution(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, reason: str = "missing") -> bool:
+async def push_caution(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, reason: str = "missing", locale: str = "ko_KR") -> bool:
     if reason == "suspicious":
-        body = "안부는 수신되었으나 폰 사용 흔적이 없습니다. 직접 확인해 주세요."
+        body = get_message(locale, "push_caution_suspicious_body")
     else:
-        body = "오늘 예정된 안부 확인이 아직 없습니다. 직접 확인해 주세요."
+        body = get_message(locale, "push_caution_missing_body")
     return await send_push(
         fcm_token,
-        title="⚠ 주의",
+        title=get_message(locale, "push_caution_title"),
         body=body,
         data={"type": "alert_caution", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_warning(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_warning(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
-        title="⚠ 경고",
-        body="연속으로 안부 확인이 되지 않고 있습니다. 직접 확인이 필요합니다.",
+        title=get_message(locale, "push_warning_title"),
+        body=get_message(locale, "push_warning_body"),
         data={"type": "alert_warning", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_urgent(fcm_token: str, subject_user_id: int, days: int = 3, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_urgent(fcm_token: str, subject_user_id: int, days: int = 3, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
-        title="🚨 긴급",
-        body=f"{days}일간 안부 확인이 없습니다. 즉시 확인이 필요합니다.",
+        title=get_message(locale, "push_urgent_title"),
+        body=get_message(locale, "push_urgent_body", days=days),
         data={"type": "alert_urgent", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_urgent_secondary(fcm_token: str, subject_user_id: int, days: int = 3, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_urgent_secondary(fcm_token: str, subject_user_id: int, days: int = 3, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
-        title="🚨 긴급",
-        body=f"{days}일간 안부 확인이 없으며 다른 보호자도 아직 확인하지 않았습니다. 즉시 확인이 필요합니다.",
+        title=get_message(locale, "push_urgent_title"),
+        body=get_message(locale, "push_urgent_secondary_body", days=days),
         data={"type": "alert_urgent", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_resolved(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_resolved(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
-        title="✅ 정상",
-        body="보호 대상자의 안부가 정상적으로 확인되었습니다.",
+        title=get_message(locale, "push_resolved_title"),
+        body=get_message(locale, "push_resolved_body"),
         data={"type": "alert_resolved", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_manual_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_manual_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
-        title="✅ 수동 안부 확인",
-        body="보호 대상자가 직접 안부 확인을 보냈습니다.",
+        title=get_message(locale, "push_manual_report_title"),
+        body=get_message(locale, "push_manual_report_body"),
         data={"type": "manual_report", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None) -> bool:
+async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
-        title="✅ 오늘 안부 확인 완료",
-        body="보호 대상자가 오늘 예정시각에 알림을 보냈습니다.",
+        title=get_message(locale, "push_auto_report_title"),
+        body=get_message(locale, "push_auto_report_body"),
         data={"type": "auto_report", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
 
 
-async def push_subscription_expired(fcm_token: str) -> bool:
+async def push_subscription_expired(fcm_token: str, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
-        title="구독 만료",
-        body="무료 체험이 종료되었습니다. 계속 이용하시려면 구독을 갱신해 주세요.",
+        title=get_message(locale, "push_subscription_expired_title"),
+        body=get_message(locale, "push_subscription_expired_body"),
         data={"type": "subscription_expired"},
     )

@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 class FcmTokenIn(BaseModel):
     fcm_token: str
+    locale: str | None = None  # 기기 로케일 (e.g. 'ko_KR', 'en_US')
 
 
 class HeartbeatScheduleIn(BaseModel):

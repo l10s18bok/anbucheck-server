@@ -1,10 +1,12 @@
 from datetime import datetime, timezone, timedelta
 import asyncio
+import json
 import logging
 
 import asyncpg
 from zoneinfo import ZoneInfo
 
+from i18n.messages import get_message
 from services import alert_service, push_service
 from services.alert_service import get_guardian_settings, should_send, should_push
 
@@ -21,20 +23,23 @@ async def _save_notification_event(
     alert_level: str,
     title: str,
     body: str,
+    message_key: str | None = None,
+    message_params: dict | None = None,
 ) -> None:
     """notification_events 테이블에 대상자 기준 1건 저장"""
+    params_json = json.dumps(message_params, ensure_ascii=False) if message_params else None
     await db.execute(
         """INSERT INTO notification_events
-           (subject_user_id, invite_code, alert_level, title, body)
-           VALUES ($1, $2, $3, $4, $5)""",
-        subject_user_id, invite_code, alert_level, title, body,
+           (subject_user_id, invite_code, alert_level, title, body, message_key, message_params)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+        subject_user_id, invite_code, alert_level, title, body, message_key, params_json,
     )
 
 
 async def _get_active_guardians(db: asyncpg.Connection, subject_user_id: int) -> list:
-    """구독 활성 보호자 목록 조회 (fcm_token 포함)"""
+    """구독 활성 보호자 목록 조회 (fcm_token + locale 포함)"""
     return await db.fetch(
-        """SELECT g.guardian_user_id, d.fcm_token
+        """SELECT g.guardian_user_id, d.fcm_token, d.locale
            FROM guardians g
            JOIN subscriptions s ON s.user_id = g.guardian_user_id
            JOIN devices d ON d.user_id = g.guardian_user_id
@@ -59,14 +64,16 @@ async def _push_to_guardians(
     level: str,
     push_fn,
 ) -> None:
-    """보호자별 settings 확인 후 Push 전송 (DB 저장 없음)"""
+    """보호자별 settings 확인 후 Push 전송 (DB 저장 없음)
+    push_fn은 (fcm_token, locale) → coroutine 형태"""
     coros = []
     for g in guardians:
         settings = await get_guardian_settings(db, g["guardian_user_id"])
         if not should_send(settings, level):
             continue
         if should_push(settings, level):
-            coros.append(push_fn(g["fcm_token"]))
+            locale = g.get("locale") or "ko_KR"
+            coros.append(push_fn(g["fcm_token"], locale))
     if coros:
         await asyncio.gather(*coros, return_exceptions=True)
 
@@ -147,24 +154,28 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             await alert_service.create_alert(db, user_id, "caution", now_dt)
             await _save_notification_event(
                 db, user_id, invite_code,
-                "caution", "⚠ 주의",
-                "안부는 수신되었으나 폰 사용 흔적이 없습니다. 직접 확인해 주세요.",
+                "caution",
+                get_message("ko_KR", "push_caution_title"),
+                get_message("ko_KR", "push_caution_suspicious_body"),
+                message_key="caution_suspicious",
             )
             await _push_to_guardians(
                 db, guardians, "caution",
-                lambda token: push_service.push_caution(token, user_id, invite_code=invite_code, reason="suspicious"),
+                lambda token, locale: push_service.push_caution(token, user_id, invite_code=invite_code, reason="suspicious", locale=locale),
             )
         elif new_suspicious_count == 2:
             # 2회 → 경고(warning) 등급
             await alert_service.create_alert(db, user_id, "warning", now_dt)
             await _save_notification_event(
                 db, user_id, invite_code,
-                "warning", "⚠ 경고",
-                "연속으로 안부 확인이 되지 않고 있습니다. 직접 확인이 필요합니다.",
+                "warning",
+                get_message("ko_KR", "push_warning_title"),
+                get_message("ko_KR", "push_warning_body"),
+                message_key="warning",
             )
             await _push_to_guardians(
                 db, guardians, "warning",
-                lambda token: push_service.push_warning(token, user_id, invite_code=invite_code),
+                lambda token, locale: push_service.push_warning(token, user_id, invite_code=invite_code, locale=locale),
             )
         elif new_suspicious_count >= 3:
             # 3회 이상 → 긴급(urgent) 등급
@@ -172,12 +183,15 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             await alert_service.create_alert(db, user_id, "urgent", now_dt, days_inactive=days)
             await _save_notification_event(
                 db, user_id, invite_code,
-                "urgent", "🚨 긴급",
-                f"{days}일간 안부 확인이 없습니다. 즉시 확인이 필요합니다.",
+                "urgent",
+                get_message("ko_KR", "push_urgent_title"),
+                get_message("ko_KR", "push_urgent_body", days=days),
+                message_key="urgent",
+                message_params={"days": days},
             )
             await _push_to_guardians(
                 db, guardians, "urgent",
-                lambda token: push_service.push_urgent(token, user_id, days=days, invite_code=invite_code),
+                lambda token, locale, d=days: push_service.push_urgent(token, user_id, days=d, invite_code=invite_code, locale=locale),
             )
 
     # 배터리 < 20% → 보호자 정보 알림
@@ -197,16 +211,6 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     }
 
 
-def _format_ampm(dt: datetime) -> str:
-    """datetime → '오전 09:30' / '오후 02:15' 형식"""
-    hour = dt.hour
-    period = "오전" if hour < 12 else "오후"
-    h12 = hour if hour <= 12 else hour - 12
-    if h12 == 0:
-        h12 = 12
-    return f"{period} {h12:02d}:{dt.minute:02d}"
-
-
 async def _save_steps_info_notification(
     db: asyncpg.Connection,
     user_id: int,
@@ -223,11 +227,32 @@ async def _save_steps_info_notification(
         tz = ZoneInfo("Asia/Seoul")
     prev_local = prev_seen.astimezone(tz)
     now_local = now_dt.astimezone(tz)
-    body = f"{prev_local.month}/{prev_local.day} {_format_ampm(prev_local)} ~ {now_local.month}/{now_local.day} {_format_ampm(now_local)} 사이 {steps_delta:,}보를 걸으셨습니다."
+    # 한국어 기본 title/body (하위 호환)
+    from_time = f"{prev_local.month}/{prev_local.day} {_format_ampm(prev_local)}"
+    to_time = f"{now_local.month}/{now_local.day} {_format_ampm(now_local)}"
+    body = get_message("ko_KR", "noti_steps_body", from_time=from_time, to_time=to_time, steps=f"{steps_delta:,}")
     await _save_notification_event(
         db, user_id, invite_code,
-        "health", "🚶 활동 정보", body,
+        "health",
+        get_message("ko_KR", "noti_steps_title"),
+        body,
+        message_key="steps",
+        message_params={
+            "from_time": from_time,
+            "to_time": to_time,
+            "steps": f"{steps_delta:,}",
+        },
     )
+
+
+def _format_ampm(dt: datetime) -> str:
+    """datetime → '오전 09:30' / '오후 02:15' 형식"""
+    hour = dt.hour
+    period = "오전" if hour < 12 else "오후"
+    h12 = hour if hour <= 12 else hour - 12
+    if h12 == 0:
+        h12 = 12
+    return f"{period} {h12:02d}:{dt.minute:02d}"
 
 
 async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -> None:
@@ -237,12 +262,14 @@ async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -
 
     await _save_notification_event(
         db, user_id, invite_code,
-        "info", "🔋 폰 배터리 부족",
-        "폰 배터리가 20% 미만입니다. 충전이 필요할 수 있습니다.",
+        "info",
+        get_message("ko_KR", "push_battery_low_title"),
+        get_message("ko_KR", "push_battery_low_body"),
+        message_key="battery_low",
     )
     await _push_to_guardians(
         db, guardians, "info",
-        lambda token: push_service.push_battery_low(token, user_id, invite_code=invite_code),
+        lambda token, locale: push_service.push_battery_low(token, user_id, invite_code=invite_code, locale=locale),
     )
 
 
@@ -253,12 +280,14 @@ async def _send_auto_report_to_guardians(db: asyncpg.Connection, user_id: int) -
 
     await _save_notification_event(
         db, user_id, invite_code,
-        "info", "✅ 오늘 안부 확인 완료",
-        "보호 대상자가 오늘 예정시각에 알림을 보냈습니다.",
+        "info",
+        get_message("ko_KR", "push_auto_report_title"),
+        get_message("ko_KR", "push_auto_report_body"),
+        message_key="auto_report",
     )
     await _push_to_guardians(
         db, guardians, "info",
-        lambda token: push_service.push_auto_report(token, user_id, invite_code=invite_code),
+        lambda token, locale: push_service.push_auto_report(token, user_id, invite_code=invite_code, locale=locale),
     )
 
 
@@ -269,10 +298,12 @@ async def _send_manual_report_to_guardians(db: asyncpg.Connection, user_id: int)
 
     await _save_notification_event(
         db, user_id, invite_code,
-        "info", "✅ 수동 안부 확인",
-        "보호 대상자가 직접 안부 확인을 보냈습니다.",
+        "info",
+        get_message("ko_KR", "push_manual_report_title"),
+        get_message("ko_KR", "push_manual_report_body"),
+        message_key="manual_report",
     )
     await _push_to_guardians(
         db, guardians, "info",
-        lambda token: push_service.push_manual_report(token, user_id, invite_code=invite_code),
+        lambda token, locale: push_service.push_manual_report(token, user_id, invite_code=invite_code, locale=locale),
     )

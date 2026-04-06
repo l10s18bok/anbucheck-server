@@ -69,10 +69,16 @@ async def update_fcm_token(
     user: dict = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    await db.execute(
-        "UPDATE devices SET fcm_token = $1, updated_at = NOW() WHERE user_id = $2",
-        body.fcm_token, user["user_id"],
-    )
+    if body.locale:
+        await db.execute(
+            "UPDATE devices SET fcm_token = $1, locale = $2, updated_at = NOW() WHERE user_id = $3",
+            body.fcm_token, body.locale, user["user_id"],
+        )
+    else:
+        await db.execute(
+            "UPDATE devices SET fcm_token = $1, updated_at = NOW() WHERE user_id = $2",
+            body.fcm_token, user["user_id"],
+        )
     return {"message": "FCM 토큰이 갱신되었습니다"}
 
 

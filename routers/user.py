@@ -9,6 +9,7 @@ from middleware.auth import get_current_user
 from models.user import UserRegisterIn, UserRegisterOut, SubscriptionOut
 from services.user_service import register_user
 from services import push_service
+from i18n.messages import get_message
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ async def delete_me(
         invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
         invite_code = invite_row["invite_code"] if invite_row else "알 수 없음"
         guardians = await db.fetch(
-            """SELECT d.fcm_token FROM guardians g
+            """SELECT d.fcm_token, d.locale FROM guardians g
                JOIN devices d ON d.user_id = g.guardian_user_id
                WHERE g.subject_user_id = $1 AND d.fcm_token IS NOT NULL AND d.fcm_token != ''""",
             user_id,
@@ -58,8 +59,8 @@ async def delete_me(
             coros = [
                 push_service.send_push(
                     g["fcm_token"],
-                    "탈퇴 알림",
-                    f"보호 대상자({invite_code})가 서비스를 탈퇴했습니다.",
+                    get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_title"),
+                    get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_body", invite_code=invite_code),
                     data={"type": "subject_withdrawn", "invite_code": invite_code},
                 )
                 for g in guardians

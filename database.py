@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS devices (
     heartbeat_hour   INTEGER NOT NULL DEFAULT 9,
     heartbeat_minute INTEGER NOT NULL DEFAULT 30,
     timezone         TEXT NOT NULL DEFAULT 'Asia/Seoul',
+    locale           TEXT NOT NULL DEFAULT 'ko_KR',
     last_seen        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -143,12 +144,41 @@ CREATE TABLE IF NOT EXISTS notification_events (
     subject_user_id     INTEGER NOT NULL,
     invite_code         TEXT,
     alert_level         TEXT NOT NULL,
+    message_key         TEXT,
+    message_params      TEXT,
     title               TEXT NOT NULL,
     body                TEXT NOT NULL,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )
 """)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_ne_subject_created ON notification_events (subject_user_id, created_at DESC)")
+
+    # notification_events message_key/message_params 마이그레이션
+    await conn.execute("""
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='notification_events' AND column_name='message_key'
+    ) THEN
+        ALTER TABLE notification_events ADD COLUMN message_key TEXT;
+        ALTER TABLE notification_events ADD COLUMN message_params TEXT;
+    END IF;
+END$$;
+""")
+
+    # locale 컬럼 마이그레이션 (기존 DB 대응)
+    await conn.execute("""
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='devices' AND column_name='locale'
+    ) THEN
+        ALTER TABLE devices ADD COLUMN locale TEXT NOT NULL DEFAULT 'ko_KR';
+    END IF;
+END$$;
+""")
 
     # last_steps 컬럼 마이그레이션 (기존 DB 대응)
     await conn.execute("""

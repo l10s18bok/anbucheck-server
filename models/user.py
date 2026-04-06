@@ -8,6 +8,7 @@ class DeviceIn(BaseModel):
     platform: str  # android | ios
     os_version: Optional[str] = None
     timezone: Optional[str] = 'Asia/Seoul'  # IANA timezone (e.g. 'Asia/Seoul', 'America/New_York')
+    locale: Optional[str] = 'ko_KR'  # 기기 로케일 (e.g. 'ko_KR', 'en_US', 'ja_JP')
 
 
 class UserRegisterIn(BaseModel):

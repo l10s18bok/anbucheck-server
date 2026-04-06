@@ -48,7 +48,9 @@ async def get_notifications(
     # 보호자에 연결된 대상자의 당일 알림 조회 (해당 보호자가 삭제한 알림 제외)
     rows = await db.fetch(
         """SELECT e.id, e.subject_user_id, e.invite_code,
-                  e.alert_level, e.title, e.body, e.created_at
+                  e.alert_level, e.title, e.body,
+                  e.message_key, e.message_params,
+                  e.created_at
            FROM notification_events e
            WHERE e.subject_user_id IN (
                SELECT g.subject_user_id FROM guardians g
@@ -76,6 +78,8 @@ async def get_notifications(
             "alert_level": row["alert_level"],
             "title": row["title"],
             "body": row["body"],
+            "message_key": row["message_key"],
+            "message_params": row["message_params"],
             "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         })
 
