@@ -33,6 +33,7 @@ async def register(body: UserRegisterIn, db: asyncpg.Connection = Depends(get_db
         device_token=result["device_token"],
         invite_code=result["invite_code"],
         subscription=sub,
+        existing_role=result.get("existing_role"),
     )
 
 
