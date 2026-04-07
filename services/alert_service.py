@@ -183,21 +183,30 @@ async def clear_all_alerts(
     }
 
 
-async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int) -> list[str]:
-    """heartbeat 수신 시 활성 경고 해소 처리, 보호자 Push 발송 (DND 적용)"""
+async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int, include_emergency: bool = False) -> list[str]:
+    """heartbeat 수신 시 활성 경고 해소 처리, 보호자 Push 발송 (DND 적용)
+    include_emergency=True: 수동 heartbeat — 긴급 도움 요청 알림도 함께 해소
+    include_emergency=False: 자동 heartbeat — 긴급 도움 요청 알림은 보호자 수동 클리어만 가능"""
     from services.heartbeat_service import _save_notification_event, _get_active_guardians, _get_invite_code, _push_to_guardians
 
-    active = await db.fetch(
-        "SELECT a.id, a.alert_level FROM alerts a WHERE a.subject_user_id = $1 AND a.status = 'active' AND (a.note IS NULL OR a.note != 'emergency_request')",
-        subject_user_id,
-    )
+    if include_emergency:
+        active = await db.fetch(
+            "SELECT a.id, a.alert_level FROM alerts a WHERE a.subject_user_id = $1 AND a.status = 'active'",
+            subject_user_id,
+        )
+    else:
+        active = await db.fetch(
+            "SELECT a.id, a.alert_level FROM alerts a WHERE a.subject_user_id = $1 AND a.status = 'active' AND (a.note IS NULL OR a.note != 'emergency_request')",
+            subject_user_id,
+        )
 
     if not active:
         return []
 
+    alert_ids = [row["id"] for row in active]
     await db.execute(
-        "DELETE FROM alerts WHERE subject_user_id = $1 AND status = 'active' AND (note IS NULL OR note != 'emergency_request')",
-        subject_user_id,
+        "DELETE FROM alerts WHERE id = ANY($1::int[])",
+        alert_ids,
     )
 
     resolved_levels = [row["alert_level"] for row in active]
