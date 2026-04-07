@@ -130,7 +130,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
 
     # 활성 경고 해소 — suspicious=false일 때만 "정상 복귀" 알림 발송
     if not suspicious:
-        await alert_service.resolve_active_alerts(db, user_id, include_emergency=manual)
+        await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
         if manual:
             await _send_manual_report_to_guardians(db, user_id)
         else:
