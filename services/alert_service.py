@@ -188,7 +188,7 @@ async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int) ->
     from services.heartbeat_service import _save_notification_event, _get_active_guardians, _get_invite_code, _push_to_guardians
 
     active = await db.fetch(
-        "SELECT a.id, a.alert_level FROM alerts a WHERE a.subject_user_id = $1 AND a.status = 'active'",
+        "SELECT a.id, a.alert_level FROM alerts a WHERE a.subject_user_id = $1 AND a.status = 'active' AND (a.note IS NULL OR a.note != 'emergency_request')",
         subject_user_id,
     )
 
@@ -196,7 +196,7 @@ async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int) ->
         return []
 
     await db.execute(
-        "DELETE FROM alerts WHERE subject_user_id = $1 AND status = 'active'",
+        "DELETE FROM alerts WHERE subject_user_id = $1 AND status = 'active' AND (note IS NULL OR note != 'emergency_request')",
         subject_user_id,
     )
 
