@@ -216,7 +216,7 @@ async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int) ->
     )
     await _push_to_guardians(
         db, guardians, "info",
-        lambda token: push_service.push_resolved(token, subject_user_id, invite_code=invite_code),
+        lambda token, locale: push_service.push_resolved(token, subject_user_id, invite_code=invite_code, locale=locale),
     )
 
     return resolved_levels
