@@ -130,10 +130,12 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
 
     # 활성 경고 해소 — suspicious=false일 때만 "정상 복귀" 알림 발송
     if not suspicious:
-        await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
         if manual:
+            # 수동 안부 확인 알림을 먼저 저장 후 경고 해소 (알림 순서 보장)
             await _send_manual_report_to_guardians(db, user_id)
+            await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
         else:
+            await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
             await _send_auto_report_to_guardians(db, user_id)
 
         # 활동 감지 알림 — steps_delta > 0일 때만
