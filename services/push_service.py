@@ -187,3 +187,13 @@ async def push_subscription_expired(fcm_token: str, locale: str = "ko_KR") -> bo
         body=get_message(locale, "push_subscription_expired_body"),
         data={"type": "subscription_expired"},
     )
+
+
+async def push_emergency(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
+    return await send_push(
+        fcm_token,
+        title=get_message(locale, "push_emergency_title"),
+        body=get_message(locale, "push_emergency_body"),
+        data={"type": "alert_emergency", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
+        sound=sound,
+    )

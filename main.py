@@ -9,6 +9,7 @@ from database import init_pool, close_pool
 from services.scheduler import setup_scheduler
 from routers import user, heartbeat, subject, alert, device, app_version, subscription
 from routers import guardian_notification_settings, notifications
+from routers import emergency
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,6 +60,7 @@ app.include_router(app_version.router)
 app.include_router(subscription.router)
 app.include_router(guardian_notification_settings.router)
 app.include_router(notifications.router)
+app.include_router(emergency.router)
 
 
 @app.get("/health")
