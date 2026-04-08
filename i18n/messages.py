@@ -35,6 +35,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{from_time} ~ {to_time} 사이 {steps}보를 걸으셨습니다.",
         "push_emergency_title": "🚨 긴급 도움 요청",
         "push_emergency_body": "보호 대상자가 직접 도움을 요청했습니다. 즉시 확인해 주세요.",
+        "push_alert_cleared_title": "✅ 안부 확인 완료",
+        "push_alert_cleared_body": "보호자 중 한 명이 대상자의 안전을 직접 확인했습니다.",
     },
     "en_US": {
         "push_battery_low_title": "🔋 Low Battery",
@@ -63,6 +65,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} steps taken between {from_time} and {to_time}.",
         "push_emergency_title": "🚨 Emergency Help Request",
         "push_emergency_body": "The subject has requested help. Please check immediately.",
+        "push_alert_cleared_title": "✅ Wellness Check Confirmed",
+        "push_alert_cleared_body": "One of the guardians has personally confirmed the subject's safety.",
     },
     "ja_JP": {
         "push_battery_low_title": "🔋 バッテリー残量低下",
@@ -91,6 +95,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{from_time}〜{to_time}の間に{steps}歩を歩きました。",
         "push_emergency_title": "🚨 緊急ヘルプ要請",
         "push_emergency_body": "見守り対象者が直接助けを求めています。直ちにご確認ください。",
+        "push_alert_cleared_title": "✅ 安否確認完了",
+        "push_alert_cleared_body": "保護者の一人が対象者の安全を直接確認しました。",
     },
     "zh_CN": {
         "push_battery_low_title": "🔋 手机电量不足",
@@ -119,6 +125,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{from_time} ~ {to_time} 期间共走了{steps}步。",
         "push_emergency_title": "🚨 紧急求助",
         "push_emergency_body": "被守护人主动请求帮助，请立即确认。",
+        "push_alert_cleared_title": "✅ 安全确认完成",
+        "push_alert_cleared_body": "一位守护者已亲自确认了被守护人的安全。",
     },
     "zh_TW": {
         "push_battery_low_title": "🔋 手機電量不足",
@@ -147,6 +155,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{from_time} ~ {to_time} 期間共走了{steps}步。",
         "push_emergency_title": "🚨 緊急求助",
         "push_emergency_body": "被守護者主動請求幫助，請立即確認。",
+        "push_alert_cleared_title": "✅ 安全確認完成",
+        "push_alert_cleared_body": "一位守護者已親自確認了被守護者的安全。",
     },
     "de_DE": {
         "push_battery_low_title": "🔋 Akku fast leer",
@@ -175,6 +185,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} Schritte zwischen {from_time} und {to_time}.",
         "push_emergency_title": "🚨 Notfall-Hilferuf",
         "push_emergency_body": "Die betreute Person hat um Hilfe gebeten. Bitte sofort pruefen.",
+        "push_alert_cleared_title": "✅ Sicherheit bestaetigt",
+        "push_alert_cleared_body": "Einer der Betreuer hat die Sicherheit persoenlich bestaetigt.",
     },
     "fr_FR": {
         "push_battery_low_title": "🔋 Batterie faible",
@@ -203,6 +215,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} pas effectues entre {from_time} et {to_time}.",
         "push_emergency_title": "🚨 Demande d'aide urgente",
         "push_emergency_body": "La personne protegee a demande de l'aide. Veuillez verifier immediatement.",
+        "push_alert_cleared_title": "✅ Verification confirmee",
+        "push_alert_cleared_body": "Un des protecteurs a personnellement confirme la securite.",
     },
     "es_ES": {
         "push_battery_low_title": "🔋 Bateria baja",
@@ -231,6 +245,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} pasos entre {from_time} y {to_time}.",
         "push_emergency_title": "🚨 Solicitud de ayuda urgente",
         "push_emergency_body": "La persona protegida ha pedido ayuda. Verifique de inmediato.",
+        "push_alert_cleared_title": "✅ Verificacion confirmada",
+        "push_alert_cleared_body": "Uno de los protectores ha confirmado personalmente la seguridad.",
     },
     "it_IT": {
         "push_battery_low_title": "🔋 Batteria scarica",
@@ -259,6 +275,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} passi tra {from_time} e {to_time}.",
         "push_emergency_title": "🚨 Richiesta di aiuto urgente",
         "push_emergency_body": "La persona assistita ha chiesto aiuto. Verificare immediatamente.",
+        "push_alert_cleared_title": "✅ Verifica confermata",
+        "push_alert_cleared_body": "Uno dei tutori ha confermato personalmente la sicurezza.",
     },
     "nl_NL": {
         "push_battery_low_title": "🔋 Batterij bijna leeg",
@@ -287,6 +305,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} stappen tussen {from_time} en {to_time}.",
         "push_emergency_title": "🚨 Noodhulpverzoek",
         "push_emergency_body": "De beschermde persoon heeft om hulp gevraagd. Controleer onmiddellijk.",
+        "push_alert_cleared_title": "✅ Controle bevestigd",
+        "push_alert_cleared_body": "Een van de beschermers heeft de veiligheid persoonlijk bevestigd.",
     },
     "pt_BR": {
         "push_battery_low_title": "🔋 Bateria fraca",
@@ -315,6 +335,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} passos entre {from_time} e {to_time}.",
         "push_emergency_title": "🚨 Pedido de ajuda urgente",
         "push_emergency_body": "A pessoa protegida pediu ajuda. Verifique imediatamente.",
+        "push_alert_cleared_title": "✅ Verificacao confirmada",
+        "push_alert_cleared_body": "Um dos protetores confirmou pessoalmente a seguranca.",
     },
     "ru_RU": {
         "push_battery_low_title": "🔋 Низкий заряд батареи",
@@ -343,6 +365,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} шагов с {from_time} по {to_time}.",
         "push_emergency_title": "🚨 Экстренный запрос помощи",
         "push_emergency_body": "Подопечный запросил помощь. Пожалуйста, проверьте немедленно.",
+        "push_alert_cleared_title": "✅ Проверка подтверждена",
+        "push_alert_cleared_body": "Один из опекунов лично подтвердил безопасность подопечного.",
     },
     "ar_SA": {
         "push_battery_low_title": "🔋 بطارية منخفضة",
@@ -371,6 +395,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} خطوة بين {from_time} و {to_time}.",
         "push_emergency_title": "🚨 طلب مساعدة طارئ",
         "push_emergency_body": "الشخص المحمي طلب المساعدة. يرجى التحقق فوراً.",
+        "push_alert_cleared_title": "✅ تم تأكيد السلامة",
+        "push_alert_cleared_body": "أحد الأوصياء تحقق شخصياً من سلامة الشخص المحمي.",
     },
     "tr_TR": {
         "push_battery_low_title": "🔋 Dusuk pil",
@@ -399,6 +425,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{from_time} - {to_time} arasinda {steps} adim.",
         "push_emergency_title": "🚨 Acil yardim talebi",
         "push_emergency_body": "Korunan kisi yardim istedi. Lutfen hemen kontrol edin.",
+        "push_alert_cleared_title": "✅ Guvenlik onaylandi",
+        "push_alert_cleared_body": "Koruyuculardan biri guvenligini bizzat dogruladi.",
     },
     "pl_PL": {
         "push_battery_low_title": "🔋 Niski poziom baterii",
@@ -427,6 +455,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} krokow miedzy {from_time} a {to_time}.",
         "push_emergency_title": "🚨 Prosba o pilna pomoc",
         "push_emergency_body": "Podopieczny poprosil o pomoc. Prosze natychmiast sprawdzic.",
+        "push_alert_cleared_title": "✅ Bezpieczenstwo potwierdzone",
+        "push_alert_cleared_body": "Jeden z opiekunow osobiscie potwierdzil bezpieczenstwo.",
     },
     "vi_VN": {
         "push_battery_low_title": "🔋 Pin yeu",
@@ -455,6 +485,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} buoc tu {from_time} den {to_time}.",
         "push_emergency_title": "🚨 Yeu cau giup do khan cap",
         "push_emergency_body": "Nguoi duoc bao ve da yeu cau giup do. Vui long kiem tra ngay.",
+        "push_alert_cleared_title": "✅ Xac nhan an toan",
+        "push_alert_cleared_body": "Mot trong cac nguoi bao ve da truc tiep xac nhan su an toan.",
     },
     "th_TH": {
         "push_battery_low_title": "🔋 แบตเตอรี่ต่ำ",
@@ -483,6 +515,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} ก้าว ระหว่าง {from_time} ถึง {to_time}",
         "push_emergency_title": "🚨 ขอความช่วยเหลือฉุกเฉิน",
         "push_emergency_body": "ผู้ได้รับการดูแลขอความช่วยเหลือ กรุณาตรวจสอบทันที",
+        "push_alert_cleared_title": "✅ ยืนยันความปลอดภัย",
+        "push_alert_cleared_body": "ผู้ดูแลท่านหนึ่งได้ยืนยันความปลอดภัยด้วยตนเอง",
     },
     "sv_SE": {
         "push_battery_low_title": "🔋 Lagt batteri",
@@ -511,6 +545,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} steg mellan {from_time} och {to_time}.",
         "push_emergency_title": "🚨 Noedhjalpsbegarande",
         "push_emergency_body": "Den skyddade personen har bett om hjalp. Kontrollera omedelbart.",
+        "push_alert_cleared_title": "✅ Sakerhet bekraftad",
+        "push_alert_cleared_body": "En av vardnadshavarna har personligen bekraftat sakerheten.",
     },
     "hi_IN": {
         "push_battery_low_title": "🔋 कम बैटरी",
@@ -539,6 +575,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{from_time} से {to_time} के बीच {steps} कदम।",
         "push_emergency_title": "🚨 आपातकालीन सहायता अनुरोध",
         "push_emergency_body": "संरक्षित व्यक्ति ने मदद मांगी है। कृपया तुरंत जाँचें।",
+        "push_alert_cleared_title": "✅ सुरक्षा पुष्टि",
+        "push_alert_cleared_body": "एक अभिभावक ने व्यक्तिगत रूप से सुरक्षा की पुष्टि की है।",
     },
     "id_ID": {
         "push_battery_low_title": "🔋 Baterai lemah",
@@ -567,6 +605,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "noti_steps_body": "{steps} langkah antara {from_time} dan {to_time}.",
         "push_emergency_title": "🚨 Permintaan bantuan darurat",
         "push_emergency_body": "Orang yang dilindungi meminta bantuan. Silakan periksa segera.",
+        "push_alert_cleared_title": "✅ Keamanan dikonfirmasi",
+        "push_alert_cleared_body": "Salah satu pelindung telah memastikan keamanan secara langsung.",
     },
 }
 

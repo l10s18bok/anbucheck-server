@@ -172,6 +172,31 @@ async def clear_all_alerts(
         subject_user_id,
     )
 
+    # 경고가 있었을 때만 다른 보호자에게 알림 발송
+    if cleared_count > 0:
+        from services.heartbeat_service import _save_notification_event, _get_active_guardians, _get_invite_code, _push_to_guardians
+
+        invite_code = await _get_invite_code(db, subject_user_id)
+
+        # notification_events 저장
+        await _save_notification_event(
+            db, subject_user_id, invite_code,
+            "info", "✅ 안부 확인 완료",
+            "보호자 중 한 명이 대상자의 안전을 직접 확인했습니다.",
+            message_key="cleared_by_guardian",
+        )
+
+        # 요청 보호자를 제외한 다른 보호자에게 Push 발송
+        guardians = await _get_active_guardians(db, subject_user_id)
+        other_guardians = [g for g in guardians if g["guardian_user_id"] != guardian_user_id]
+        if other_guardians:
+            await _push_to_guardians(
+                db, other_guardians, "info",
+                lambda token, locale: push_service.push_alert_cleared(
+                    token, subject_user_id, invite_code=invite_code, locale=locale,
+                ),
+            )
+
     now_kst = datetime.now(KST).strftime("%Y-%m-%dT%H:%M:%S+09:00")
     return {
         "cleared_count": cleared_count,

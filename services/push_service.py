@@ -189,6 +189,16 @@ async def push_subscription_expired(fcm_token: str, locale: str = "ko_KR") -> bo
     )
 
 
+async def push_alert_cleared(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
+    return await send_push(
+        fcm_token,
+        title=get_message(locale, "push_alert_cleared_title"),
+        body=get_message(locale, "push_alert_cleared_body"),
+        data={"type": "alert_cleared", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
+        sound=sound,
+    )
+
+
 async def push_emergency(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
