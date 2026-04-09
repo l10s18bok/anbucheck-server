@@ -49,7 +49,7 @@ async def job_heartbeat_check() -> None:
                       d.heartbeat_hour, d.heartbeat_minute
                FROM users u
                JOIN devices d ON u.id = d.user_id
-               WHERE u.role = 'subject'
+               WHERE u.invite_code IS NOT NULL
                  AND (d.heartbeat_hour * 60 + d.heartbeat_minute + 120) = $1
                  AND d.last_seen < $2""",
             current_minutes, today_utc_start,
@@ -253,7 +253,8 @@ async def job_cleanup_orphan_subjects() -> None:
     async with get_pool().acquire() as db:
         subjects_rows = await db.fetch(
             """SELECT u.id FROM users u
-               WHERE u.role = 'subject'
+               WHERE u.invite_code IS NOT NULL
+                 AND u.role = 'subject'
                  AND u.created_at < NOW() - INTERVAL '30 days'
                  AND NOT EXISTS (
                    SELECT 1 FROM guardians g WHERE g.subject_user_id = u.id

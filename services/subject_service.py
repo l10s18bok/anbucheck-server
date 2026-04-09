@@ -6,9 +6,9 @@ from config import MAX_SUBJECTS
 
 
 async def link_subject(db: asyncpg.Connection, guardian_user_id: int, invite_code: str) -> dict:
-    # invite_code로 대상자 조회
+    # invite_code로 대상자 조회 (role 무관 — G+S도 대상자 기능 활성화 가능)
     subject = await db.fetchrow(
-        "SELECT id, invite_code FROM users WHERE invite_code = $1 AND role = 'subject'",
+        "SELECT id, invite_code FROM users WHERE invite_code = $1",
         invite_code,
     )
 
@@ -16,6 +16,13 @@ async def link_subject(db: asyncpg.Connection, guardian_user_id: int, invite_cod
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="유효하지 않은 고유 코드입니다")
 
     subject_user_id = subject["id"]
+
+    # 자기 자신 연결 방지
+    if subject_user_id == guardian_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="자기 자신을 대상자로 연결할 수 없습니다",
+        )
 
     # 이미 연결됐는지 확인
     existing = await db.fetchrow(

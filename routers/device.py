@@ -52,6 +52,17 @@ async def get_my_device(
         user["user_id"],
     ) or 0
 
+    # 보호자+대상자(G+S) 여부
+    user_row = await db.fetchrow(
+        "SELECT invite_code FROM users WHERE id = $1", user["user_id"]
+    )
+    is_also_subject = (
+        user["role"] == "guardian"
+        and user_row is not None
+        and user_row["invite_code"] is not None
+    )
+    invite_code = user_row["invite_code"] if user_row else None
+
     return DeviceInfoOut(
         device_id=row["device_id"],
         heartbeat_hour=row["heartbeat_hour"],
@@ -60,6 +71,8 @@ async def get_my_device(
         subscription_active=sub_active or False,
         subscription_plan=sub_plan,
         guardian_count=guardian_count,
+        is_also_subject=is_also_subject,
+        invite_code=invite_code,
     )
 
 
@@ -95,8 +108,16 @@ async def update_heartbeat_schedule(
     if not (0 <= m <= 59):
         raise HTTPException(status_code=400, detail="heartbeat 분은 0~59 사이여야 합니다")
 
-    # 대상자 본인 기기만 변경 가능
-    if user["role"] != "subject":
+    # 대상자(또는 대상자 기능 활성화된 보호자)만 변경 가능
+    if user["role"] == "subject":
+        pass  # 대상자는 항상 허용
+    elif user["role"] == "guardian":
+        has_invite = await db.fetchval(
+            "SELECT invite_code FROM users WHERE id = $1", user["user_id"]
+        )
+        if not has_invite:
+            raise HTTPException(status_code=403, detail="대상자만 heartbeat 시각을 변경할 수 있습니다")
+    else:
         raise HTTPException(status_code=403, detail="대상자만 heartbeat 시각을 변경할 수 있습니다")
     row = await db.fetchrow(
         "SELECT id FROM devices WHERE device_id = $1 AND user_id = $2",

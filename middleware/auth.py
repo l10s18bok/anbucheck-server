@@ -39,3 +39,21 @@ async def require_subject(user: dict = Depends(get_current_user)) -> dict:
             detail="대상자만 접근할 수 있습니다",
         )
     return user
+
+
+async def require_subject_feature(
+    user: dict = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),
+) -> dict:
+    """대상자이거나, invite_code가 있는 보호자(G+S)"""
+    if user["role"] == "subject":
+        return user
+    row = await db.fetchrow(
+        "SELECT invite_code FROM users WHERE id = $1", user["user_id"]
+    )
+    if row and row["invite_code"]:
+        return user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="대상자 기능이 활성화되어야 합니다",
+    )

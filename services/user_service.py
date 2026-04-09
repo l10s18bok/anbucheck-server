@@ -20,6 +20,18 @@ def _generate_device_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+async def generate_unique_invite_code(db: asyncpg.Connection) -> str:
+    """DB에서 UNIQUE한 invite_code를 생성하여 반환"""
+    for _ in range(10):
+        candidate = _generate_invite_code()
+        row = await db.fetchrow(
+            "SELECT id FROM users WHERE invite_code = $1", candidate
+        )
+        if row is None:
+            return candidate
+    raise RuntimeError("invite_code 생성 실패 (10회 시도)")
+
+
 async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict:
     # 동일 device_id가 이미 등록된 기기인지 확인
     existing = await db.fetchrow(

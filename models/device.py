@@ -26,3 +26,5 @@ class DeviceInfoOut(BaseModel):
     subscription_active: bool = False
     subscription_plan: str | None = None
     guardian_count: int = 0
+    is_also_subject: bool = False
+    invite_code: str | None = None
