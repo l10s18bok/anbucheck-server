@@ -58,6 +58,7 @@ async def send_push(
             notification=messaging.Notification(title=title, body=body),
             data=msg_data,
             android=messaging.AndroidConfig(
+                priority="high",  # Doze 모드에서도 즉시 전달
                 notification=messaging.AndroidNotification(
                     sound=sound,
                     channel_id="anbu_alerts",  # 앱 종료 시 OS가 직접 표시할 채널
