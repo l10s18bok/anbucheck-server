@@ -65,8 +65,16 @@ async def send_push(
                 )
             ),
             apns=messaging.APNSConfig(
+                headers={
+                    "apns-priority": "10",  # 즉시 전달 (배터리 절약 무시)
+                    "apns-push-type": "alert",  # 알림 표시형 Push
+                },
                 payload=messaging.APNSPayload(
-                    aps=messaging.Aps(sound=sound or "")  # 빈 문자열 = iOS 무음
+                    aps=messaging.Aps(
+                        sound=sound or "default",
+                        content_available=True,  # 백그라운드 수신 보장
+                        mutable_content=True,  # 알림 서비스 확장 허용
+                    )
                 )
             ),
             token=fcm_token,
