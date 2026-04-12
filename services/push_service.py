@@ -54,6 +54,12 @@ async def send_push(
         return False
     try:
         msg_data = {k: str(v) for k, v in (data or {}).items()}
+
+        # 대상자별 그룹화 키 — subject_user_id 우선, 없으면 invite_code, 둘 다 없으면 'default'
+        # 앱이 포그라운드/백그라운드/종료 상태 모두에서 OS가 같은 키로 묶어 표시
+        group_id = msg_data.get("subject_user_id") or msg_data.get("invite_code") or "default"
+        group_key = f"anbu_subject_{group_id}"
+
         message = messaging.Message(
             notification=messaging.Notification(title=title, body=body),
             data=msg_data,
@@ -62,6 +68,7 @@ async def send_push(
                 notification=messaging.AndroidNotification(
                     sound=sound,
                     channel_id="anbu_alerts",  # 앱 종료 시 OS가 직접 표시할 채널
+                    tag=group_key,  # 같은 대상자 알림 그룹화 (Android notification group)
                 )
             ),
             apns=messaging.APNSConfig(
@@ -74,6 +81,7 @@ async def send_push(
                         sound=sound or "default",
                         content_available=True,  # 백그라운드 수신 보장
                         mutable_content=True,  # 알림 서비스 확장 허용
+                        thread_id=group_key,  # iOS 알림센터 스레드 그룹화
                     )
                 )
             ),
