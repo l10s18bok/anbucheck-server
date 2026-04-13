@@ -92,13 +92,47 @@ async def send_push(
         return True
     except Exception as e:
         logger.error(f"[보호자 알림] 발송 실패 → {title} ({fcm_token[:10]}...): {e}")
-        return _is_token_error(e)
+        if _is_dead_token_error(e):
+            await _invalidate_fcm_token(fcm_token)
+        return False
 
 
-def _is_token_error(exc: Exception) -> bool:
-    """토큰 오류인지 여부 반환 (True = 토큰 무효화 필요)"""
+def _is_dead_token_error(exc: Exception) -> bool:
+    """FCM 토큰이 영구적으로 죽었는지 판정 (재시도 무의미)"""
+    # firebase-admin 예외 타입 우선 판정
+    try:
+        from firebase_admin import messaging as _m, exceptions as _fx
+        if isinstance(exc, (_m.UnregisteredError, _m.SenderIdMismatchError)):
+            return True
+        if isinstance(exc, _fx.NotFoundError):
+            return True
+    except Exception:
+        pass
+    # 문자열 폴백 (FCM v1 에러 메시지)
     msg = str(exc).lower()
-    return "registration-token-not-registered" in msg or "invalid-registration-token" in msg
+    return (
+        "registration-token-not-registered" in msg
+        or "invalid-registration-token" in msg
+        or "requested entity was not found" in msg
+        or "unregistered" in msg
+    )
+
+
+async def _invalidate_fcm_token(fcm_token: str) -> None:
+    """죽은 FCM 토큰을 devices 테이블에서 NULL 처리하여 이후 발송 시도 차단"""
+    try:
+        from database import get_pool
+        pool = get_pool()
+        if pool is None:
+            return
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE devices SET fcm_token = NULL, updated_at = NOW() WHERE fcm_token = $1",
+                fcm_token,
+            )
+        logger.info(f"[FCM 토큰 무효화] {fcm_token[:10]}... → NULL 처리 ({result})")
+    except Exception as e:
+        logger.error(f"[FCM 토큰 무효화 실패] {fcm_token[:10]}...: {e}")
 
 
 # ── locale 기반 경고 Push 메시지 헬퍼 ──
