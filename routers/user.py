@@ -121,9 +121,10 @@ async def disable_subject(
 
     # 나를 보호하는 보호자에게 Push 알림
     guardians = await db.fetch(
-        """SELECT d.fcm_token, d.locale FROM guardians g
+        """SELECT DISTINCT ON (g.guardian_user_id) d.fcm_token, d.locale FROM guardians g
            JOIN devices d ON d.user_id = g.guardian_user_id
-           WHERE g.subject_user_id = $1 AND d.fcm_token IS NOT NULL AND d.fcm_token != ''""",
+           WHERE g.subject_user_id = $1 AND d.fcm_token IS NOT NULL AND d.fcm_token != ''
+           ORDER BY g.guardian_user_id, d.updated_at DESC""",
         user_id,
     )
     if guardians:

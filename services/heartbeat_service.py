@@ -39,7 +39,8 @@ async def _save_notification_event(
 async def _get_active_guardians(db: asyncpg.Connection, subject_user_id: int) -> list:
     """구독 활성 보호자 목록 조회 (fcm_token + locale 포함)"""
     return await db.fetch(
-        """SELECT g.guardian_user_id, d.fcm_token, d.locale
+        """SELECT DISTINCT ON (g.guardian_user_id)
+                  g.guardian_user_id, d.fcm_token, d.locale
            FROM guardians g
            JOIN subscriptions s ON s.user_id = g.guardian_user_id
            JOIN devices d ON d.user_id = g.guardian_user_id
@@ -47,7 +48,8 @@ async def _get_active_guardians(db: asyncpg.Connection, subject_user_id: int) ->
              AND s.plan != 'expired'
              AND s.expires_at > NOW()
              AND d.fcm_token IS NOT NULL
-             AND d.fcm_token != ''""",
+             AND d.fcm_token != ''
+           ORDER BY g.guardian_user_id, d.updated_at DESC""",
         subject_user_id,
     )
 

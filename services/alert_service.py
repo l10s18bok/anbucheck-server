@@ -301,7 +301,8 @@ async def send_alert_to_guardians(
 ) -> None:
     """보호자들에게 경고 Push 발송 (구독 활성 보호자만)"""
     guardians = await db.fetch(
-        """SELECT d.fcm_token, g.guardian_user_id
+        """SELECT DISTINCT ON (g.guardian_user_id)
+                  d.fcm_token, g.guardian_user_id
            FROM guardians g
            JOIN subscriptions s ON s.user_id = g.guardian_user_id
            JOIN devices d ON d.user_id = g.guardian_user_id
@@ -309,7 +310,8 @@ async def send_alert_to_guardians(
              AND s.plan != 'expired'
              AND s.expires_at > NOW()
              AND d.fcm_token IS NOT NULL
-             AND d.fcm_token != ''""",
+             AND d.fcm_token != ''
+           ORDER BY g.guardian_user_id, d.updated_at DESC""",
         subject_user_id,
     )
 
