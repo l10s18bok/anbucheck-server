@@ -142,12 +142,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
 
         # 활동 감지 알림 — steps_delta > 0일 때만
         if steps_delta is not None and steps_delta > 0:
-            await _save_steps_info_notification(
-                db, user_id, steps_delta,
-                prev_seen=device["last_seen"],
-                now_dt=now_dt,
-                tz_name=device["timezone"],
-            )
+            await _save_steps_info_notification(db, user_id, steps_delta)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
         # PRD 4.6: suspicious=true 시 보호자에게 주의/경고 알림 발송
@@ -219,44 +214,21 @@ async def _save_steps_info_notification(
     db: asyncpg.Connection,
     user_id: int,
     steps_delta: int,
-    prev_seen: datetime,
-    now_dt: datetime,
-    tz_name: str,
 ) -> None:
-    """활동 감지 알림 — 이벤트 1건 저장 (Push 없음)"""
+    """활동 감지 알림 — 이벤트 1건 저장 (Push 없음).
+    클라이언트가 자정~heartbeat 시각 누적 걸음수를 전송하므로 시간 범위는 표시하지 않는다.
+    """
     invite_code = await _get_invite_code(db, user_id)
-    try:
-        tz = ZoneInfo(tz_name)
-    except Exception:
-        tz = ZoneInfo("Asia/Seoul")
-    prev_local = prev_seen.astimezone(tz)
-    now_local = now_dt.astimezone(tz)
-    # 한국어 기본 title/body (하위 호환)
-    from_time = f"{prev_local.month}/{prev_local.day} {_format_ampm(prev_local)}"
-    to_time = f"{now_local.month}/{now_local.day} {_format_ampm(now_local)}"
-    body = get_message("ko_KR", "noti_steps_body", from_time=from_time, to_time=to_time, steps=f"{steps_delta:,}")
+    steps_str = f"{steps_delta:,}"
+    body = get_message("ko_KR", "noti_steps_body", steps=steps_str)
     await _save_notification_event(
         db, user_id, invite_code,
         "health",
         get_message("ko_KR", "noti_steps_title"),
         body,
         message_key="steps",
-        message_params={
-            "from_time": from_time,
-            "to_time": to_time,
-            "steps": f"{steps_delta:,}",
-        },
+        message_params={"steps": steps_str},
     )
-
-
-def _format_ampm(dt: datetime) -> str:
-    """datetime → '오전 09:30' / '오후 02:15' 형식"""
-    hour = dt.hour
-    period = "오전" if hour < 12 else "오후"
-    h12 = hour if hour <= 12 else hour - 12
-    if h12 == 0:
-        h12 = 12
-    return f"{period} {h12:02d}:{dt.minute:02d}"
 
 
 async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -> None:
