@@ -168,34 +168,34 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
                 lambda token, locale: push_service.push_caution(token, user_id, invite_code=invite_code, reason="suspicious", locale=locale),
             )
         elif new_suspicious_count == 2:
-            # 2회 → 경고(warning) 등급
+            # 2회 → 경고(warning) 등급 (suspicious 전용 문구)
             await alert_service.create_alert(db, user_id, "warning", now_dt)
             await _save_notification_event(
                 db, user_id, invite_code,
                 "warning",
                 get_message("ko_KR", "push_warning_title"),
-                get_message("ko_KR", "push_warning_body"),
-                message_key="warning",
+                get_message("ko_KR", "push_warning_suspicious_body"),
+                message_key="warning_suspicious",
             )
             await _push_to_guardians(
                 db, guardians, "warning",
-                lambda token, locale: push_service.push_warning(token, user_id, invite_code=invite_code, locale=locale),
+                lambda token, locale: push_service.push_warning(token, user_id, invite_code=invite_code, reason="suspicious", locale=locale),
             )
         elif new_suspicious_count >= 3:
-            # 3회 이상 → 긴급(urgent) 등급
+            # 3회 이상 → 긴급(urgent) 등급 (suspicious 전용 문구)
             days = new_suspicious_count
             await alert_service.create_alert(db, user_id, "urgent", now_dt, days_inactive=days)
             await _save_notification_event(
                 db, user_id, invite_code,
                 "urgent",
                 get_message("ko_KR", "push_urgent_title"),
-                get_message("ko_KR", "push_urgent_body", days=days),
-                message_key="urgent",
+                get_message("ko_KR", "push_urgent_suspicious_body", days=days),
+                message_key="urgent_suspicious",
                 message_params={"days": days},
             )
             await _push_to_guardians(
                 db, guardians, "urgent",
-                lambda token, locale, d=days: push_service.push_urgent(token, user_id, days=d, invite_code=invite_code, locale=locale),
+                lambda token, locale, d=days: push_service.push_urgent(token, user_id, days=d, invite_code=invite_code, reason="suspicious", locale=locale),
             )
 
     # 배터리 < 20% → 보호자 정보 알림
