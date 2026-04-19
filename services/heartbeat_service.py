@@ -147,8 +147,10 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
             await _send_auto_report_to_guardians(db, user_id)
 
-        # 활동 감지 알림 — steps_delta > 0일 때만
-        if steps_delta is not None and steps_delta > 0:
+        # 활동 감지 알림 — 자동 heartbeat에서 steps_delta > 0일 때만.
+        # 수동 보고(manual=true)는 걸음수가 실려 와도 이력 집계용으로만 사용하고
+        # "수동 안부 확인" 알림이 이미 발송되므로 활동 정보 알림은 중복 생성하지 않는다.
+        if not manual and steps_delta is not None and steps_delta > 0:
             await _save_steps_info_notification(db, user_id, steps_delta)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)

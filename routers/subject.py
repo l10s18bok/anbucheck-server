@@ -3,8 +3,12 @@ import asyncpg
 
 from database import get_db
 from middleware.auth import require_guardian
-from models.guardian import SubjectLinkIn, SubjectLinkOut, SubjectListOut, SubjectOut, AlertSummary
-from services.subject_service import link_subject, get_subjects, unlink_subject
+from models.guardian import (
+    SubjectLinkIn, SubjectLinkOut, SubjectListOut, SubjectOut, AlertSummary, StepHistoryOut,
+)
+from services.subject_service import (
+    link_subject, get_subjects, unlink_subject, get_step_history_for_subject,
+)
 
 router = APIRouter(prefix="/api/v1/subjects", tags=["subjects"])
 
@@ -49,9 +53,10 @@ async def list_subjects(
                 status=s["status"],
                 alert=alert,
                 device_id=s.get("device_id"),
-                heartbeat_hour=s.get("heartbeat_hour", 9),
-                heartbeat_minute=s.get("heartbeat_minute", 30),
+                heartbeat_hour=s.get("heartbeat_hour", 18),
+                heartbeat_minute=s.get("heartbeat_minute", 0),
                 battery_level=s.get("battery_level"),
+                weekly_steps=s.get("weekly_steps", []),
             )
         )
     return SubjectListOut(
@@ -70,3 +75,18 @@ async def unlink(
 ):
     await unlink_subject(db, guardian_id, user["user_id"])
     return {"message": "대상자 연결이 해제되었습니다"}
+
+
+@router.get("/{subject_user_id}/step-history", response_model=StepHistoryOut)
+async def step_history(
+    subject_user_id: int,
+    days: int = 30,
+    user: dict = Depends(require_guardian),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    # 7 ≤ days ≤ 30 으로 제한
+    days = max(7, min(30, days))
+    history = await get_step_history_for_subject(
+        db, guardian_user_id=user["user_id"], subject_user_id=subject_user_id, days=days,
+    )
+    return StepHistoryOut(step_history=history)
