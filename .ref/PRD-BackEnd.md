@@ -441,7 +441,9 @@ Body:
   "suspicious": false,
   "battery_level": 85
 }
-// steps_delta: 이전 heartbeat 이후 걸음수 증가량 (권한 거부 시 null)
+// steps_delta:
+//   - 자동 (manual=false) → 오늘 자정 ~ 현재 시각 누적 걸음수 (권한 거부 시 null)
+//   - 수동 (manual=true)  → **항상 null** (클라이언트가 활동 정보 알림 추가 생성을 차단하기 위해 강제 null)
 Response: 200 OK
 {
   "status": "ok",

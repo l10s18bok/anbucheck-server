@@ -38,7 +38,7 @@ flowchart TD
     SPKilled --> Collect
 
     Collect[데이터 수집]
-    Collect --> Steps[걸음수 조회<br/>pedometer<br/>steps_delta]
+    Collect --> Steps[걸음수 조회<br/>pedometer_2<br/>오늘 자정 ~ 현재 누적<br/>steps_delta<br/>※ 수동 보고는 항상 null]
     Collect --> Battery[배터리 상태 조회<br/>battery_level]
 
     Steps --> StepsCheck{steps_delta > 0?}
