@@ -25,14 +25,21 @@ async def _save_notification_event(
     body: str,
     message_key: str | None = None,
     message_params: dict | None = None,
+    location_lat: float | None = None,
+    location_lng: float | None = None,
+    location_accuracy: float | None = None,
+    location_captured_at: datetime | None = None,
 ) -> None:
-    """notification_events 테이블에 대상자 기준 1건 저장"""
+    """notification_events 테이블에 대상자 기준 1건 저장.
+    location_* 필드는 긴급 요청 시에만 값이 들어가며, 그 외 알림에서는 모두 NULL."""
     params_json = json.dumps(message_params, ensure_ascii=False) if message_params else None
     await db.execute(
         """INSERT INTO notification_events
-           (subject_user_id, invite_code, alert_level, title, body, message_key, message_params)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+           (subject_user_id, invite_code, alert_level, title, body, message_key, message_params,
+            location_lat, location_lng, location_accuracy, location_captured_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
         subject_user_id, invite_code, alert_level, title, body, message_key, params_json,
+        location_lat, location_lng, location_accuracy, location_captured_at,
     )
 
 

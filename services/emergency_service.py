@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import asyncpg
 
 from i18n.messages import get_message
+from models.emergency import LocationPayload
 from services import alert_service, push_service
 from services.alert_service import get_guardian_settings, should_send, should_push
 from services.heartbeat_service import (
@@ -16,8 +17,14 @@ from services.heartbeat_service import (
 logger = logging.getLogger(__name__)
 
 
-async def process_emergency(db: asyncpg.Connection, user_id: int, device_id: str) -> dict:
-    """대상자가 긴급 도움 요청 버튼을 눌렀을 때 처리"""
+async def process_emergency(
+    db: asyncpg.Connection,
+    user_id: int,
+    device_id: str,
+    location: LocationPayload | None = None,
+) -> dict:
+    """대상자가 긴급 도움 요청 버튼을 눌렀을 때 처리.
+    location이 있으면 notification_events에 좌표를 저장하고 FCM data에도 포함."""
     now_dt = datetime.now(timezone.utc)
 
     # 1. 대상자 정보 조회
@@ -40,13 +47,22 @@ async def process_emergency(db: asyncpg.Connection, user_id: int, device_id: str
         alert_id,
     )
 
-    # 4. notification_event 저장
+    # 4. notification_event 저장 (위치 포함 가능)
+    loc_lat = location.latitude if location else None
+    loc_lng = location.longitude if location else None
+    loc_acc = location.accuracy_meters if location else None
+    loc_cap = location.captured_at if location else None
+
     await _save_notification_event(
         db, user_id, invite_code,
         "urgent",
         get_message("ko_KR", "push_emergency_title"),
         get_message("ko_KR", "push_emergency_body"),
         message_key="emergency",
+        location_lat=loc_lat,
+        location_lng=loc_lng,
+        location_accuracy=loc_acc,
+        location_captured_at=loc_cap,
     )
 
     # 5. 활성 보호자에게 긴급 Push 발송 (DND 무시 — urgent 등급)
@@ -63,11 +79,15 @@ async def process_emergency(db: asyncpg.Connection, user_id: int, device_id: str
                 push_service.push_emergency(
                     g["fcm_token"], user_id,
                     invite_code=invite_code, locale=locale,
+                    lat=loc_lat, lng=loc_lng, accuracy=loc_acc,
                 )
             )
         if coros:
             await asyncio.gather(*coros, return_exceptions=True)
 
-    logger.info(f"[긴급 도움 요청] user_id={user_id}, alert_id={alert_id}, 보호자 {len(guardians)}명 발송")
+    logger.info(
+        f"[긴급 도움 요청] user_id={user_id}, alert_id={alert_id}, "
+        f"보호자 {len(guardians)}명 발송, location={'O' if location else 'X'}"
+    )
 
     return {"status": "ok", "message": "긴급 알림이 발송되었습니다"}

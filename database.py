@@ -167,6 +167,15 @@ BEGIN
 END$$;
 """)
 
+    # notification_events 위치 컬럼 마이그레이션 (긴급 요청 시 위치 전달)
+    await conn.execute("""
+ALTER TABLE notification_events
+    ADD COLUMN IF NOT EXISTS location_lat DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS location_lng DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS location_accuracy DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS location_captured_at TIMESTAMPTZ
+""")
+
     # locale 컬럼 마이그레이션 (기존 DB 대응)
     await conn.execute("""
 DO $$

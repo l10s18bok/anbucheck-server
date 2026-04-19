@@ -250,11 +250,32 @@ async def push_alert_cleared(fcm_token: str, subject_user_id: int, sound: Option
     )
 
 
-async def push_emergency(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
+async def push_emergency(
+    fcm_token: str,
+    subject_user_id: int,
+    sound: Optional[str] = "default",
+    invite_code: str | None = None,
+    locale: str = "ko_KR",
+    lat: float | None = None,
+    lng: float | None = None,
+    accuracy: float | None = None,
+) -> bool:
+    data: dict = {
+        "type": "alert_emergency",
+        "subject_user_id": str(subject_user_id),
+        "invite_code": invite_code or "",
+    }
+    # FCM data는 모두 문자열이어야 하며, 값이 있을 때만 키를 포함한다.
+    if lat is not None:
+        data["lat"] = str(round(lat, 6))
+    if lng is not None:
+        data["lng"] = str(round(lng, 6))
+    if accuracy is not None:
+        data["accuracy"] = str(round(accuracy, 2))
     return await send_push(
         fcm_token,
         title=get_message(locale, "push_emergency_title"),
         body=get_message(locale, "push_emergency_body"),
-        data={"type": "alert_emergency", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
+        data=data,
         sound=sound,
     )

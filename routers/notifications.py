@@ -50,6 +50,8 @@ async def get_notifications(
         """SELECT e.id, e.subject_user_id, e.invite_code,
                   e.alert_level, e.title, e.body,
                   e.message_key, e.message_params,
+                  e.location_lat, e.location_lng,
+                  e.location_accuracy, e.location_captured_at,
                   e.created_at
            FROM notification_events e
            WHERE e.subject_user_id IN (
@@ -80,6 +82,10 @@ async def get_notifications(
             "body": row["body"],
             "message_key": row["message_key"],
             "message_params": row["message_params"],
+            "location_lat": row["location_lat"],
+            "location_lng": row["location_lng"],
+            "location_accuracy": row["location_accuracy"],
+            "location_captured_at": row["location_captured_at"].isoformat() if row["location_captured_at"] else None,
             "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         })
 

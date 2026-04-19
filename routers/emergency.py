@@ -15,5 +15,10 @@ async def emergency(
     user: dict = Depends(require_subject_feature),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    result = await process_emergency(db, user["user_id"], body.device_id)
+    result = await process_emergency(
+        db,
+        user["user_id"],
+        body.device_id,
+        location=body.location,
+    )
     return EmergencyOut(**result)
