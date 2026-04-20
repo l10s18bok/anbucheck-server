@@ -124,6 +124,22 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
         user_id, device_id,
     )
 
+    # 당일 첫 heartbeat 여부 판정 — heartbeat_logs INSERT 전에 조회해야 정확하다.
+    # 기기 로컬 타임존 기준 자정 이후 수신 이력 유무로 판단.
+    # 이 플래그는 auto_report / steps 알림 중복 생성을 차단하는 데 쓴다.
+    # heartbeat_logs INSERT는 매번 수행(이력·차트용), 알림 생성만 당일 첫 수신에 한정.
+    is_first_today = await db.fetchval(
+        """SELECT NOT EXISTS (
+               SELECT 1 FROM heartbeat_logs
+               WHERE device_id = $1
+                 AND server_ts >= (
+                     (now() AT TIME ZONE COALESCE($2, 'Asia/Seoul'))::date
+                 )::timestamp AT TIME ZONE COALESCE($2, 'Asia/Seoul')
+           )""",
+        device_id,
+        device["timezone"],
+    )
+
     # heartbeat_logs 기록
     await db.execute(
         """INSERT INTO heartbeat_logs
@@ -140,17 +156,19 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     # 활성 경고 해소 — suspicious=false일 때만 "정상 복귀" 알림 발송
     if not suspicious:
         if manual:
-            # 수동 안부 확인 알림을 먼저 저장 후 경고 해소 (알림 순서 보장)
+            # 수동 안부 확인은 사용자 의도적 액션이므로 당일 첫 수신 여부와 무관하게 매번 알림
             await _send_manual_report_to_guardians(db, user_id)
             await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
         else:
             await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
-            await _send_auto_report_to_guardians(db, user_id)
+            # 당일 첫 heartbeat에만 auto_report 발송 — 재전송·재시도로 중복 Push 방지
+            if is_first_today:
+                await _send_auto_report_to_guardians(db, user_id)
 
-        # 활동 감지 알림 — 자동 heartbeat에서 steps_delta > 0일 때만.
-        # 수동 보고(manual=true)는 걸음수가 실려 와도 이력 집계용으로만 사용하고
-        # "수동 안부 확인" 알림이 이미 발송되므로 활동 정보 알림은 중복 생성하지 않는다.
-        if not manual and steps_delta is not None and steps_delta > 0:
+        # 활동 감지 알림 — 자동 heartbeat + 당일 첫 수신 + steps_delta > 0일 때만.
+        # 수동 보고는 "수동 안부 확인" 알림이 이미 있으므로 steps 알림 중복 생략.
+        # 하루 여러 번 전송 시 동일 걸음수가 여러 번 뜨는 UX 문제를 차단한다.
+        if not manual and is_first_today and steps_delta is not None and steps_delta > 0:
             await _save_steps_info_notification(db, user_id, steps_delta)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
