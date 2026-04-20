@@ -116,10 +116,23 @@ CREATE TABLE IF NOT EXISTS heartbeat_logs (
     suspicious    INTEGER DEFAULT 0,
     battery_level INTEGER,
     client_ts     TEXT NOT NULL,
-    server_ts     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    server_ts     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    scheduled_key TEXT
 )
 """)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_heartbeat_device_ts ON heartbeat_logs (device_id, server_ts DESC)")
+
+    # scheduled_key 마이그레이션 (기존 DB 대응) — HTTP 재전송 중복 차단용 idempotency key.
+    # 자동 heartbeat: "YYYY-MM-DD_HH:MM" 형식, 수동 보고(manual=true)는 NULL.
+    # NULL은 partial unique index에서 제외되므로 수동 보고 여러 건은 여전히 허용.
+    await conn.execute("""
+ALTER TABLE heartbeat_logs ADD COLUMN IF NOT EXISTS scheduled_key TEXT
+""")
+    await conn.execute("""
+CREATE UNIQUE INDEX IF NOT EXISTS idx_heartbeat_device_schedkey
+ON heartbeat_logs (device_id, scheduled_key)
+WHERE scheduled_key IS NOT NULL
+""")
 
     await conn.execute("""
 CREATE TABLE IF NOT EXISTS app_versions (

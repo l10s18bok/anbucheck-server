@@ -104,6 +104,29 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     suspicious    = payload["suspicious"]
     battery_level = payload.get("battery_level")
     manual        = payload.get("manual", False)
+    scheduled_key = payload.get("scheduled_key")
+
+    # HTTP 재전송 중복 차단 — 자동 heartbeat에 한해 (device_id, scheduled_key) dedup.
+    # 클라가 응답 패킷 유실로 retry하면 서버는 같은 요청을 2번 받는다.
+    # 첫 요청이 이미 heartbeat_logs에 INSERT된 상태라면 auto_report Push / steps /
+    # 경고 해소 등 부수효과를 다시 실행하지 않고 200 OK만 반환해 보호자 알림 중복을 차단.
+    # manual=true는 사용자 의도적 액션이므로 스킵 대상에서 제외 (클라 lastManualReportDate가 하루 1회 가드).
+    if not manual and scheduled_key:
+        is_duplicate = await db.fetchval(
+            "SELECT 1 FROM heartbeat_logs WHERE device_id = $1 AND scheduled_key = $2 LIMIT 1",
+            device_id, scheduled_key,
+        )
+        if is_duplicate:
+            logger.info(
+                f"[heartbeat dedup] skip duplicate device_id={device_id} scheduled_key={scheduled_key}"
+            )
+            now_kst = datetime.now(KST).strftime("%Y-%m-%dT%H:%M:%S+09:00")
+            return {
+                "status": "ok",
+                "server_time": now_kst,
+                "heartbeat_hour": device["heartbeat_hour"],
+                "heartbeat_minute": device["heartbeat_minute"],
+            }
 
     # devices 테이블 갱신
     new_suspicious_count = device["suspicious_count"] + 1 if suspicious else 0
@@ -140,17 +163,22 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
         device["timezone"],
     )
 
-    # heartbeat_logs 기록
+    # heartbeat_logs 기록.
+    # scheduled_key가 있는 자동 heartbeat는 UNIQUE 제약 충돌 시(극단적 동시 INSERT)
+    # ON CONFLICT DO NOTHING으로 조용히 스킵 — 이미 SELECT dedup에서 거른 뒤라서
+    # 실제로 도달할 가능성은 낮지만 정합성 보장용 defense-in-depth.
     await db.execute(
         """INSERT INTO heartbeat_logs
-           (device_id, steps_delta, suspicious, battery_level, client_ts, server_ts)
-           VALUES ($1, $2, $3, $4, $5, $6)""",
+           (device_id, steps_delta, suspicious, battery_level, client_ts, server_ts, scheduled_key)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT DO NOTHING""",
         device_id,
         steps_delta,
         int(suspicious),
         battery_level,
         payload["timestamp"],
         now_dt,
+        scheduled_key,
     )
 
     # 활성 경고 해소 — suspicious=false일 때만 "정상 복귀" 알림 발송
