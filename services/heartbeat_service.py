@@ -166,8 +166,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             # 두 알림이 같은 초에 도착해 보호자 화면이 지저분해진다.
             # → 실제 경고가 해소된 경우는 resolved 쪽을 우선하고 auto_report는 생략.
             serious_resolved = bool(set(resolved_levels) & {"caution", "warning", "urgent"})
-            # 당일 첫 heartbeat + 의미 있는 경고 해소가 없을 때만 auto_report 발송
-            if is_first_today and not serious_resolved:
+            if not serious_resolved:
                 await _send_auto_report_to_guardians(db, user_id)
 
         # 활동 감지 알림 — 자동 heartbeat + 당일 첫 수신 + steps_delta > 0일 때만.
