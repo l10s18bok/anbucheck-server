@@ -160,9 +160,14 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             await _send_manual_report_to_guardians(db, user_id)
             await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
         else:
-            await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
-            # 당일 첫 heartbeat에만 auto_report 발송 — 재전송·재시도로 중복 Push 방지
-            if is_first_today:
+            resolved_levels = await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
+            # caution/warning/urgent가 해소되면 alert_service가 이미 "정상 복귀"(alert_resolved)
+            # Push를 발송한다. 그 위에 auto_report까지 보내면 "정상 복귀" + "오늘 안부 확인 완료"
+            # 두 알림이 같은 초에 도착해 보호자 화면이 지저분해진다.
+            # → 실제 경고가 해소된 경우는 resolved 쪽을 우선하고 auto_report는 생략.
+            serious_resolved = bool(set(resolved_levels) & {"caution", "warning", "urgent"})
+            # 당일 첫 heartbeat + 의미 있는 경고 해소가 없을 때만 auto_report 발송
+            if is_first_today and not serious_resolved:
                 await _send_auto_report_to_guardians(db, user_id)
 
         # 활동 감지 알림 — 자동 heartbeat + 당일 첫 수신 + steps_delta > 0일 때만.

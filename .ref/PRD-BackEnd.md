@@ -162,12 +162,13 @@ heartbeat 수신 → last_seen 갱신
   ├─ 오늘(로컬 타임존) 이미 heartbeat 수신한 경우 → suspicious 강제 false (하루 첫 heartbeat만 판정)
   ├─ battery_level ≤ 10% + 기존 info 경고 없음 → 정보 등급 1회 발송 (DND 적용)
   └─ suspicious 판정:
-      ├─ false → 활성 경고 해소 여부 확인
-      │   ├─ 활성 경고 있었음 → 완전 해소 + 보호자 Push "정상 복귀" (정보 등급 DND 적용)
-      │   └─ 활성 경고 없었음
-      │       ├─ manual = true  → 보호자 Push "수동 안부 확인" (사용자 의도적 액션, 매번 발송)
-      │       └─ manual = false AND is_first_today → 보호자 Push "오늘 안부 확인 완료" (당일 1회)
-      │                                              + steps_delta > 0일 때 활동 정보 알림 (당일 1회)
+      ├─ false → 활성 경고 해소 여부 확인 (resolve_active_alerts → resolved_levels 반환)
+      │   ├─ caution/warning/urgent 중 하나라도 해소 → 보호자 Push "정상 복귀" (정보 등급 DND 적용)
+      │   │                                          auto_report는 중복이라 스킵
+      │   ├─ info(배터리)만 해소 또는 해소 없음
+      │   │   ├─ manual = true  → 보호자 Push "수동 안부 확인" (사용자 의도적 액션, 매번 발송)
+      │   │   └─ manual = false AND is_first_today → 보호자 Push "오늘 안부 확인 완료" (당일 1회)
+      │   │                                          + steps_delta > 0일 때 활동 정보 알림 (당일 1회)
       └─ true  → warning/urgent → caution 하향 (정상 복귀 알림 없음)
                → 대상자에게 wellbeing_check 발송 (보호자 경고 없음)
                → 보호자 경고는 heartbeat 미수신 시에만 발생
