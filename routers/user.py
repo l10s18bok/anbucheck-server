@@ -1,16 +1,17 @@
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 import asyncpg
 
 from database import get_db
-from middleware.auth import get_current_user, require_guardian
+from middleware.auth import get_current_user, require_guardian, require_subject
 from models.user import UserRegisterIn, UserRegisterOut, SubscriptionOut
 from services.user_service import register_user, generate_unique_invite_code
 from services import push_service
 from i18n.messages import get_message
-from config import DEFAULT_HEARTBEAT_HOUR, DEFAULT_HEARTBEAT_MINUTE
+from config import DEFAULT_HEARTBEAT_HOUR, DEFAULT_HEARTBEAT_MINUTE, FREE_TRIAL_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,61 @@ async def disable_subject(
         )
 
     return {"message": "안부 보호가 해제되었습니다"}
+
+
+@router.post("/switch-to-guardian")
+async def switch_to_guardian(
+    user: dict = Depends(require_subject),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    """대상자가 보호자 기능을 추가로 활성화 (S → G+S).
+
+    role을 guardian으로 전환하고 3개월 무료 체험 구독을 생성한다.
+    기존 invite_code와 heartbeat 예약은 그대로 유지되어 S 기능은 계속 동작하며,
+    이후에는 기존 G+S 사용자와 동일한 경로로 취급된다.
+    """
+    user_id = user["user_id"]
+
+    # 기존 subscription 존재 여부 확인 (방어적 — 정상 흐름에선 subject에게 없음)
+    existing_sub = await db.fetchrow(
+        "SELECT id FROM subscriptions WHERE user_id = $1", user_id
+    )
+
+    expires_at_dt = datetime.now(timezone.utc) + timedelta(days=FREE_TRIAL_DAYS)
+
+    async with db.transaction():
+        await db.execute(
+            "UPDATE users SET role = 'guardian', updated_at = NOW() WHERE id = $1",
+            user_id,
+        )
+        if existing_sub is None:
+            await db.execute(
+                "INSERT INTO subscriptions (user_id, plan, expires_at) VALUES ($1, $2, $3)",
+                user_id, "free_trial", expires_at_dt,
+            )
+
+    # 현재 invite_code + heartbeat 스케줄 조회 (응답 구성용)
+    u = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
+    dev = await db.fetchrow(
+        "SELECT heartbeat_hour, heartbeat_minute FROM devices WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
+        user_id,
+    )
+    sub = await db.fetchrow(
+        "SELECT plan, expires_at FROM subscriptions WHERE user_id = $1 ORDER BY id DESC LIMIT 1",
+        user_id,
+    )
+
+    return {
+        "invite_code": u["invite_code"] if u else None,
+        "heartbeat_hour": dev["heartbeat_hour"] if dev else DEFAULT_HEARTBEAT_HOUR,
+        "heartbeat_minute": dev["heartbeat_minute"] if dev else DEFAULT_HEARTBEAT_MINUTE,
+        "subscription": {
+            "plan": sub["plan"] if sub else "free_trial",
+            "expires_at": sub["expires_at"].isoformat() if sub and sub["expires_at"] else expires_at_dt.isoformat(),
+            "is_active": True,
+        },
+        "message": "보호자 기능이 활성화되었습니다",
+    }
 
 
 @router.delete("/me", status_code=204)
