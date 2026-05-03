@@ -41,6 +41,36 @@ def _get_messaging():
     return messaging
 
 
+# FCM data["type"] → 로그 레벨 라벨. ASCII 코드로 grep 친화적.
+_LEVEL_LABELS = {
+    "alert_caution": "CAUTION",
+    "alert_warning": "WARNING",
+    "alert_urgent": "URGENT",
+    "alert_emergency": "EMERGENCY",
+    "alert_info": "INFO",
+    "alert_resolved": "NORMAL",
+    "alert_cleared": "NORMAL",
+    "auto_report": "NORMAL",
+    "manual_report": "NORMAL",
+    "subscription_expired": "EXPIRED",
+}
+
+# 대상자 invite_code를 함께 로깅할 레벨 (보호자가 어느 대상자 때문에 알림을 받았는지 식별용)
+_LEVELS_WITH_SUBJECT = {"CAUTION", "WARNING", "URGENT", "EMERGENCY"}
+
+
+def _format_push_log_prefix(fcm_token: str, data: Optional[dict]) -> str:
+    d = data or {}
+    msg_type = str(d.get("type") or "")
+    label = _LEVEL_LABELS.get(msg_type, msg_type or "OTHER")
+    parts = [f"[보호자 알림] {label}"]
+    if label in _LEVELS_WITH_SUBJECT:
+        invite = str(d.get("invite_code") or "") or "?"
+        parts.append(f"대상자={invite}")
+    parts.append(f"({fcm_token[:10]}...)")
+    return " ".join(parts)
+
+
 async def send_push(
     fcm_token: str,
     title: str,
@@ -88,10 +118,10 @@ async def send_push(
             token=fcm_token,
         )
         await asyncio.to_thread(messaging.send, message)
-        logger.info(f"[보호자 알림] 발송 완료 → {title} ({fcm_token[:10]}...)")
+        logger.info(f"{_format_push_log_prefix(fcm_token, data)} 발송 완료")
         return True
     except Exception as e:
-        logger.error(f"[보호자 알림] 발송 실패 → {title} ({fcm_token[:10]}...): {e}")
+        logger.error(f"{_format_push_log_prefix(fcm_token, data)} 발송 실패: {e}")
         if _is_dead_token_error(e):
             await _invalidate_fcm_token(fcm_token)
         return False
