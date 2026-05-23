@@ -55,7 +55,8 @@ async def _verify_and_persist(
       · iOS:     originalTransactionId
       · Android: purchaseToken
 
-    이렇게 두면 향후 RTDN(8단계) 수신 시 식별자로 user를 역매핑할 수 있다.
+    이 식별자는 RTDN 수신(`services/iap_notification_service.py`) 시
+    `subscriptions.receipt_data = $1`로 user를 역매핑하는 키로 사용된다.
     """
     if platform not in ("ios", "android"):
         raise HTTPException(
