@@ -4,3 +4,7 @@ asyncpg==0.30.*
 apscheduler==3.11.*
 firebase-admin==6.6.*
 python-dotenv==1.1.*
+# 인앱 결제 영수증 검증
+app-store-server-library>=1.4
+google-api-python-client>=2.140
+google-auth>=2.34

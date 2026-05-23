@@ -24,3 +24,21 @@ MAX_SUBJECTS = 5
 
 # Rate limit for /subjects/link (requests per minute)
 LINK_RATE_LIMIT = 5
+
+# ─────────────────────────────────────────
+# 인앱 결제 영수증 검증
+# ─────────────────────────────────────────
+
+# Apple App Store Server API
+APPLE_IAP_ISSUER_ID: str = os.getenv("APPLE_IAP_ISSUER_ID", "")
+APPLE_IAP_KEY_ID: str = os.getenv("APPLE_IAP_KEY_ID", "")
+# Railway 등 single-line 환경변수는 PEM 줄바꿈을 `\n`으로 이스케이프해서 저장하므로 복원
+APPLE_IAP_KEY_P8: str = os.getenv("APPLE_IAP_KEY_P8", "").replace("\\n", "\n")
+APPLE_BUNDLE_ID: str = os.getenv("APPLE_BUNDLE_ID", "kr.co.anbucheck.live")
+
+# Google Play Developer API
+GOOGLE_SERVICE_ACCOUNT_JSON: str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+GOOGLE_PACKAGE_NAME: str = os.getenv("GOOGLE_PACKAGE_NAME", "kr.co.anbucheck.live")
+
+# 단일 구독 상품 ID (Apple/Google 공통)
+IAP_PRODUCT_ID: str = "anbu_yearly"

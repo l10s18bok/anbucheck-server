@@ -12,6 +12,8 @@ class SubscriptionOut(BaseModel):
 class SubscriptionVerifyIn(BaseModel):
     platform: str  # android | ios
     product_id: str
+    # iOS: PurchaseDetails.purchaseID (transactionId 문자열)
+    # Android: PurchaseDetails.verificationData.serverVerificationData (purchaseToken)
     receipt: str
 
 
