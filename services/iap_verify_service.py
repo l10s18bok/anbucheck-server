@@ -52,10 +52,10 @@ def _decode_jws_payload(jws: str) -> dict:
     """JWS signedTransactionInfo 페이로드 디코딩.
 
     이 경로는 우리가 직접 Apple HTTPS 엔드포인트를 호출해 받은 응답이므로
-    TLS가 이미 인증을 보장한다. 8단계 RTDN(서버-수신) 구현 시 외부 입력의
-    JWS는 SignedDataVerifier로 서명 검증해야 한다.
+    TLS가 이미 인증을 보장한다. 외부 입력의 JWS(예: S2S Notifications V2)는
+    `routers/iap_notification.py::_verify_apple_signed_payload`에서
+    SignedDataVerifier로 서명 검증을 거친다.
     """
-    # TODO(8단계 RTDN): SignedDataVerifier + Apple Root CA 묶음으로 서명 검증 추가
     import jwt as _jwt  # app-store-server-library의 transitive 의존성 (PyJWT)
     return _jwt.decode(jws, options={"verify_signature": False})
 

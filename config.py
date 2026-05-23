@@ -42,3 +42,13 @@ GOOGLE_PACKAGE_NAME: str = os.getenv("GOOGLE_PACKAGE_NAME", "kr.co.anbucheck.liv
 
 # 단일 구독 상품 ID (Apple/Google 공통)
 IAP_PRODUCT_ID: str = "anbu_yearly"
+
+# ─────────────────────────────────────────
+# Google Cloud Pub/Sub Push (RTDN) 인증
+# ─────────────────────────────────────────
+# Push subscription 생성 시 지정한 OIDC audience 문자열과 일치해야 함.
+# 일반적으로 RTDN 엔드포인트 URL (예: https://anbu.up.railway.app/api/v1/iap/google-notifications)
+PUBSUB_AUDIENCE: str = os.getenv("PUBSUB_AUDIENCE", "")
+# Pub/Sub Push subscription 생성 시 지정한 service account 이메일.
+# 이메일 검증 우회 방지를 위해 토큰의 email claim과 정확히 일치해야 함.
+PUBSUB_SERVICE_ACCOUNT_EMAIL: str = os.getenv("PUBSUB_SERVICE_ACCOUNT_EMAIL", "")
