@@ -73,8 +73,12 @@ def _call_apple_subscription_statuses(transaction_id: str):
         except APIException as e:
             last_error = e
             code = getattr(e, "http_status_code", None)
-            if code == 404 and env_str == "production":
-                logger.info("Apple production 404 — sandbox 재시도")
+            if code in (401, 404) and env_str == "production":
+                # 401: production endpoint가 sandbox transaction을 인증 거부 (Apple 공식 동작)
+                # 404: production endpoint에 transaction 없음
+                # 둘 다 sandbox 영수증 추정 → sandbox endpoint로 재시도
+                # (진짜 키 자격증명 문제면 sandbox에서도 같은 에러 → 자연 중단)
+                logger.info("Apple production status=%s — sandbox 재시도 (sandbox receipt 추정)", code)
                 continue
             # production 외 에러 또는 sandbox에서 발생한 에러는 즉시 중단
             logger.warning("Apple API 에러 env=%s status=%s msg=%s", env_str, code, str(e))
