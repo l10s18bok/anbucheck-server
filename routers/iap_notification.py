@@ -19,6 +19,7 @@ import json
 import logging
 
 import asyncpg
+import attr
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 import config
@@ -272,7 +273,36 @@ def _verify_apple_signed_payload(signed_payload: str) -> dict:
 
 
 def _shallow_to_dict(obj) -> dict:
-    """dataclass-like 객체를 한 단계 dict로 변환 (중첩 객체는 그대로 둠)."""
+    """객체를 dict로 변환 — attrs 객체 + 일반 dataclass-like 모두 처리.
+
+    `app-store-server-library`의 ResponseBodyV2DecodedPayload·Data·RenewalInfo 등은
+    `attr.s(slots=True)` 기반이라 vars()/__dict__가 비어있다. attr.fields()로 필드명을
+    추출하고 중첩 attrs 객체는 재귀 변환한다.
+
+    enum 필드(notificationType, environment 등)는 attrs 모델이 raw* 짝 필드를 자동
+    제공하므로, raw* → 원래 키 alias를 추가해 service 측 코드가 'notificationType' 같은
+    친숙한 키로 string 값을 가져갈 수 있게 한다.
+    """
+    if attr.has(obj.__class__):
+        result: dict = {}
+        for a in attr.fields(obj.__class__):
+            value = getattr(obj, a.name)
+            if value is not None and attr.has(value.__class__):
+                result[a.name] = _shallow_to_dict(value)
+            else:
+                result[a.name] = value
+        raw_aliases = {
+            "rawNotificationType": "notificationType",
+            "rawSubtype": "subtype",
+            "rawEnvironment": "environment",
+            "rawStatus": "status",
+            "rawConsumptionRequestReason": "consumptionRequestReason",
+        }
+        for raw_key, target_key in raw_aliases.items():
+            if result.get(raw_key) is not None:
+                result[target_key] = result[raw_key]
+        return result
+
     result: dict = {}
     for key, value in vars(obj).items():
         if hasattr(value, "__dict__") and not isinstance(value, (str, bytes)):
