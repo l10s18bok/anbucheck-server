@@ -17,7 +17,7 @@
 
 ### 1.2 목적
 스마트폰 사용 패턴을 기반으로 사용자의 안녕을 자동으로 확인하는 크로스 플랫폼(Android/iOS) 시스템의 서버 측 설계.
-클라이언트로부터 heartbeat를 수신하고, 매일 고정 시각(기본 09:30) + 2시간 내 미수신 시 보호자에게 FCM Push 경고를 발송하며, Android/iOS 기기에 매일 고정 시각에 FCM Silent Push(heartbeat_trigger)를 발송하는 역할을 담당한다.
+클라이언트로부터 heartbeat를 수신하고, 매일 고정 시각(기본 18:00) + 2시간 내 미수신 시 보호자에게 FCM Push 경고를 발송하는 역할을 담당한다. Heartbeat 트리거는 클라이언트 자체 스케줄링(WorkManager/BGTaskScheduler)으로 동작하며, 서버는 Silent Push를 발송하지 않는다.
 
 **기술 스택:** Python + FastAPI + PostgreSQL (asyncpg) + Railway
 
@@ -38,6 +38,7 @@
 - 대상자-보호자 연결은 서버가 발급한 **고유 코드(invite_code)**로 매칭
 - DB가 유출되어도 개인 식별 불가 (device_id, invite_code만 존재)
 - 보호자가 대상자를 식별하기 위한 별칭은 클라이언트 로컬에만 저장
+- **위치정보는 정기 heartbeat에서 수집하지 않음.** 대상자가 `POST /api/v1/emergency` 호출 시 사용자 동의 하에 lat/lng/accuracy를 1회 첨부할 수 있으며, 서버는 `notification_events` 테이블에만 저장하고 대상자 기기 타임존 자정 스케줄러가 다른 알림과 함께 일괄 삭제 (§4.7 / §6.4 참조)
 
 
 ### 1.5 수익 모델
@@ -45,6 +46,18 @@
 - **대상자 앱은 완전 무료** (결제 기능 없음, heartbeat 전송만 담당)
 - **대상자 최대 5명** (단일 요금, 티어 구분 없음)
 - **하단 고정 배너 광고** (유료 구독 보호자는 광고 제거)
+
+
+### 1.6 플랫폼별 모드 제한
+
+| 플랫폼 | 대상자 모드 | 보호자 모드 | 비고 |
+|--------|------------|------------|------|
+| **Android** | ✅ 지원 | ✅ 지원 | heartbeat 전송 + 모니터링 모두 가능 |
+| **iOS** | ❌ 미지원 | ✅ 전용 | 보호자 모니터링만 가능 (heartbeat 전송 안 함) |
+
+- iOS는 BGTaskScheduler의 불안정성(앱 스와이프 종료 시 미실행)으로 대상자 heartbeat 전송 신뢰성을 보장할 수 없어 보호자 모드만 지원
+- 서버 관점에서 iOS 기기의 role은 항상 `guardian` — heartbeat 수신 대상이 아님
+- 대상자 등록은 Android 기기에서만 발생
 
 
 ---
@@ -70,13 +83,13 @@
 │  │ API Router   │  │  Scheduler   │  │   Push Service     │  │
 │  │             │  │ (APScheduler)│  │ (firebase-admin)   │  │
 │  │ · 사용자 등록│  │              │  │                    │  │
-│  │ · heartbeat │  │ · heartbeat  │  │ · Silent Push 발송 │  │
-│  │ · 대상자    │  │   트리거 FCM │  │   (iOS/Android     │  │
-│  │   연결 관리 │  │   발송 (매일 │  │    heartbeat 트리거│  │
-│  │ · 구독 관리  │  │   고정 시각) │  │ · 일반 Push 발송   │  │
-│  │ · FCM 토큰  │  │ · 경고 생성  │  │   (보호자 알림)    │  │
-│  │ · FCM 토큰  │  │ · 경고 생성  │  │                    │  │
-│  │   갱신      │  │   (미수신 시) │  │                    │  │
+│  │ · heartbeat │  │ · 미수신     │  │ · 일반 Push 발송   │  │
+│  │ · 대상자    │  │   경고 체크  │  │   (보호자 알림)    │  │
+│  │   연결 관리 │  │   (매 1분)   │  │                    │  │
+│  │ · 구독 관리  │  │ · 경고 생성  │  │                    │  │
+│  │ · FCM 토큰  │  │   (미수신 시) │  │                    │  │
+│  │ · 알림 설정 │  │ · 구독 만료  │  │                    │  │
+│  │   갱신      │  │   체크       │  │                    │  │
 │  └──────┬──────┘  └──────┬───────┘  └─────────┬──────────┘  │
 │         │               │                    │              │
 │         └───────────────┼────────────────────┘              │
@@ -93,11 +106,11 @@
 
 | | Android 기기 | iOS 기기 |
 |--|-------------|----------|
-| heartbeat 트리거 | **서버가 매일 고정 시각에 FCM Silent Push 발송** | **서버가 매일 고정 시각에 FCM Silent Push 발송** |
-| 서버 추가 작업 | 기기별 고정 시각에 heartbeat_trigger Push 발송 | 기기별 고정 시각에 heartbeat_trigger Push 발송 |
-| 확인 주기 | 매일 고정 시각 (기본 09:30) | 매일 고정 시각 (기본 09:30) |
-| 시각 변경 | 서버가 변경된 시각에 맞춰 FCM Push 발송 | 서버가 변경된 시각에 맞춰 FCM Push 발송 |
-| 클라이언트 스케줄러 | 불필요 (WorkManager 제거) | 불필요 |
+| heartbeat 트리거 | **클라이언트 WorkManager** (OS 네이티브 스케줄링) | **클라이언트 BGTaskScheduler** (OS 네이티브 스케줄링) |
+| 서버 역할 | heartbeat 수신 + 미수신 시 경고 생성 | heartbeat 수신 + 미수신 시 경고 생성 |
+| 확인 주기 | 매일 고정 시각 (기본 18:00) | 매일 고정 시각 (기본 18:00) |
+| 미수신 체크 | 기기별 heartbeat 시각 + 2시간 경과 시 서버가 매 1분 체크 | 동일 |
+| 시각 변경 | 대상자가 변경 → 서버 DB 갱신 → 클라이언트 WorkManager 재예약 | 대상자가 변경 → 서버 DB 갱신 → 클라이언트 BGTask 재예약 |
 
 
 ### 2.3 대상자-보호자 연결 메커니즘
@@ -148,33 +161,39 @@ guardians: { subject_user_id:1, guardian_user_id:2 }
 
 | 등급 | 조건 | 발송 |
 |------|------|------|
-| 🚨 긴급 | 경고 3회 이상 누적 | 매일 반복, 보호자 확인까지 종료 없음 |
-| ⚠ 경고 | 미수신 2회 이상 | 1~2회 다음날 재발송 |
-| ⚠ 주의 | 미수신 1회 | 1회 발송 |
+| 🚨 긴급 | 미수신 3회+ OR suspicious 3회+ | 매일 반복, 보호자 확인까지 종료 없음 |
+| ⚠ 경고 | 미수신 2회 OR suspicious 2회 | 1~2회 다음날 재발송 |
+| ⚠ 주의 | 미수신 1회 OR suspicious 1회 | 1회 발송 |
 | 🔵 정보 | 배터리 ≤ 10% / 자동 heartbeat 정상 수신 / 정상복귀 / 수동 heartbeat | DND 적용 (시간 외 소리, 시간 내 조용) |
 
 ```
 [heartbeat 수신 시]
 heartbeat 수신 → last_seen 갱신
-  ├─ 당일 첫 heartbeat 여부 판정 (is_first_today) — 기기 로컬 타임존 기준 자정 이후 수신 이력
-  │   · heartbeat_logs INSERT 전에 조회해야 정확 (INSERT 이후에 보면 항상 false)
-  │   · auto_report/steps 알림 중복 방지에만 사용. heartbeat_logs INSERT는 매번 수행 (이력·차트용)
-  ├─ 오늘(로컬 타임존) 이미 heartbeat 수신한 경우 → suspicious 강제 false (하루 첫 heartbeat만 판정)
+  ├─ is_first_today 판정 (기기 로컬 타임존 자정 이후 수신 이력)
+  │   · heartbeat_logs INSERT **전**에 조회해야 정확 (INSERT 이후엔 항상 false)
+  │   · auto_report/steps 알림 **중복 방지에만** 사용. heartbeat_logs INSERT는 매번 수행 (이력·차트용)
+  ├─ 오늘(기기 로컬 타임존) 이미 heartbeat 수신한 경우 → suspicious 강제 false (하루 첫 heartbeat만 판정)
   ├─ battery_level ≤ 10% + 기존 info 경고 없음 → 정보 등급 1회 발송 (DND 적용)
   └─ suspicious 판정:
-      ├─ false → 활성 경고 해소 여부 확인 (resolve_active_alerts → resolved_levels 반환)
-      │   ├─ caution/warning/urgent 중 하나라도 해소 → 보호자 Push "정상 복귀" (정보 등급 DND 적용)
-      │   │                                          auto_report는 중복이라 스킵
+      ├─ false → 활성 경고 해소 (resolve_active_alerts → resolved_levels 반환)
+      │   ├─ caution/warning/urgent 중 **하나라도** 해소 → 보호자 Push "정상 복귀" (정보 등급 DND 적용)
+      │   │                                              auto_report는 중복이라 스킵
       │   ├─ info(배터리)만 해소 또는 해소 없음
-      │   │   ├─ manual = true  → 보호자 Push "수동 안부 확인" (사용자 의도적 액션, 매번 발송)
+      │   │   ├─ manual = true  → 보호자 Push "수동 안부 확인" (사용자 의도적 액션이므로 매번 발송, is_first_today 가드 없음)
       │   │   └─ manual = false AND is_first_today → 보호자 Push "오늘 안부 확인 완료" (당일 1회)
-      │   │                                          + steps_delta > 0일 때 활동 정보 알림 (당일 1회)
+      │   │                                          + steps_delta > 0이면 활동 정보 알림 동시 생성 (당일 1회)
       └─ true  → warning/urgent → caution 하향 (정상 복귀 알림 없음)
-               → 대상자에게 wellbeing_check 발송 (보호자 경고 없음)
-               → 보호자 경고는 heartbeat 미수신 시에만 발생
+               → suspicious_count 기반 보호자 경고 에스컬레이션 (suspicious 전용 문구 사용):
+                 ├─ 1회 (suspicious_count=1) → 주의(caution) 등급 + `caution_suspicious` + 보호자 Push (중복 방지)
+                 ├─ 2회 (suspicious_count=2) → 경고(warning) 등급 + `warning_suspicious` + 보호자 Push (warning/urgent 없을 때만)
+                 ├─ 3회+ (suspicious_count≥3) → 긴급(urgent) 등급 + `urgent_suspicious` + 보호자 Push (매일 반복)
+                 └─ 보호자 경고 클리어 시 suspicious_count 리셋 → 다음 suspicious부터 1차 재시작
+               ※ suspicious 경로는 heartbeat는 수신되었으나 활동 기록(걸음 + 발화 시점
+                  기기 사용)이 없는 경우이므로 scheduler의 미수신 경로(`warning`/`urgent`)와
+                  별도 문구로 분기됨
 
 [heartbeat 미수신 시 (기기별 고정 시각 + 2시간 경과 시 체크)]
-지정 시각 + 2시간 내 미수신 대상자 감지 (기본: 09:30 → 11:30 체크)
+지정 시각 + 2시간 내 미수신 대상자 감지 (기본: 18:00 → 20:00 체크)
   ├─ 보호자 구독 만료 → 알림 미발송 (heartbeat는 계속 수신)
   ├─ battery_level ≤ 10% → 정보 등급 1회 발송 후 종료 (이후 상향 없음)
   └─ 누적 미수신 횟수 기반 (기존 활성 경고 상태로 결정):
@@ -186,6 +205,15 @@ heartbeat 수신 → last_seen 갱신
 [보호자가 경고 클리어 시]
 활성 경고 전부 삭제 + suspicious_count 리셋
 이후 heartbeat가 여전히 없으면 → 다음 날 같은 시각에 1차 경고부터 재시작
+
+[대상자 긴급 도움 요청 (POST /api/v1/emergency)]
+대상자가 앱에서 직접 긴급 버튼 탭 → 확인 다이얼로그 → 전송
+  ├─ 기존 경고 에스컬레이션(suspicious_count, days_inactive)과 완전히 독립
+  ├─ 즉시 urgent 등급 경고 생성 (caution→warning→urgent 단계 생략)
+  │   · alerts 테이블: alert_level='urgent', note='emergency_request'
+  │   · notification_events 테이블: message_key='emergency'
+  ├─ 연결된 보호자 전원에게 긴급 Push 발송 (DND 무시, 구독 만료 무관)
+  └─ 기존 카운터(suspicious_count, days_inactive) 변경하지 않음
 ```
 
 - 경고는 **서버에서 직접 보호자 기기에 FCM Push**로 발송
@@ -222,8 +250,14 @@ heartbeat 수신 → last_seen 갱신
 
 // 긴급 등급 — 즉시 확인 필요
 {
-  "notification": { "title": "🚨 긴급: 대상자 확인 필요", "body": "안부 확인이 없으며 마지막 확인 시 폰 사용 흔적도 없었습니다. 즉시 확인이 필요합니다." },
+  "notification": { "title": "🚨 긴급: 대상자 확인 필요", "body": "N일 연속 활동 기록이 감지되지 않습니다. 즉시 확인이 필요합니다." },
   "data": { "type": "alert_urgent", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
+}
+
+// 긴급 등급 — 대상자 직접 긴급 도움 요청
+{
+  "notification": { "title": "🚨 긴급 도움 요청", "body": "보호 대상자가 직접 도움을 요청했습니다. 즉시 확인해 주세요." },
+  "data": { "type": "alert_emergency", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
 }
 
 // 정보 등급 — 자동 heartbeat 정상 수신
@@ -259,33 +293,41 @@ server/
 ├── config.py                       # 환경변수 기반 설정
 ├── database.py                     # PostgreSQL 연결 풀 (asyncpg) + 테이블 초기화
 ├── routers/
-│   ├── user.py                     # POST /api/v1/users (사용자 등록)
+│   ├── user.py                     # POST /api/v1/users, DELETE /api/v1/users/me
 │   ├── heartbeat.py                # POST /api/v1/heartbeat
-│   ├── subject.py                  # POST /api/v1/subjects/link, GET /api/v1/subjects
-│   ├── alert.py                    # GET /api/v1/alerts, PUT /api/v1/alerts/{id}/clear, PUT /api/v1/alerts/clear-all
-│   ├── device.py                   # PUT /api/v1/devices/fcm-token, PATCH heartbeat-schedule
+│   ├── subject.py                  # POST /api/v1/subjects/link, GET /api/v1/subjects, DELETE unlink
+│   ├── alert.py                    # GET /api/v1/alerts, PUT clear, PUT clear-all
+│   ├── device.py                   # GET /api/v1/devices/me, PUT fcm-token, PATCH/PUT heartbeat-schedule
 │   ├── app_version.py              # GET /api/v1/app/version-check, PUT/GET /api/v1/admin/app-version
-│   └── subscription.py             # GET/POST /api/v1/subscription
+│   ├── subscription.py             # GET/POST /api/v1/subscription
+│   ├── guardian_notification_settings.py  # GET/PUT /api/v1/guardian/notification-settings
+│   ├── notifications.py            # GET/DELETE /api/v1/notifications
+│   ├── emergency.py                # POST /api/v1/emergency (긴급 도움 요청)
+│   └── iap_notification.py         # POST /api/v1/iap/google-notifications, /apple-notifications (RTDN 수신)
 ├── services/
 │   ├── user_service.py             # 사용자 등록, invite_code 생성
 │   ├── heartbeat_service.py        # heartbeat 비즈니스 로직
-│   ├── alert_service.py            # 경고 생성/클리어/보호자 Push 발송
+│   ├── alert_service.py            # 경고 생성/클리어/보호자 Push 발송, DND 판정
+│   ├── emergency_service.py        # 긴급 도움 요청 처리 (즉시 urgent 경고 생성 + Push)
 │   ├── subject_service.py          # 대상자-보호자 연결 관리
-│   ├── push_service.py             # Silent Push / 일반 Push 발송
-│   ├── subscription_service.py     # 구독 상태 관리
-│   └── scheduler.py                # APScheduler 경고 체크 + Silent Push + 구독 만료
+│   ├── push_service.py             # 일반 Push 발송 (보호자 경고 알림)
+│   ├── subscription_service.py     # 구독 상태 관리 (영수증 검증 + DB 반영)
+│   ├── iap_verify_service.py       # Apple/Google IAP API 호출 (verify + acknowledge)
+│   ├── iap_notification_service.py # RTDN 페이로드 분기 + DB UPDATE (Google + Apple 공용)
+│   └── scheduler.py                # APScheduler 미수신 경고 체크 + 구독 만료 + 정리 작업
 ├── models/
 │   ├── user.py                     # Pydantic 모델 (요청/응답 스키마)
 │   ├── device.py
 │   ├── guardian.py
 │   ├── alert.py
 │   ├── heartbeat.py
-│   └── subscription.py
+│   ├── subscription.py
+│   ├── app_version.py
+│   └── notification_settings.py
 ├── middleware/
 │   └── auth.py                     # device_token 기반 인증 (FastAPI Depends)
 ├── requirements.txt                # Python 패키지 목록
-├── Procfile                        # Railway 배포용 (web: uvicorn main:app)
-└── firebase-service-account.json   # FCM 인증 키 (환경변수로 대체 가능)
+└── Dockerfile                      # Railway 배포용 (python main.py)
 ```
 
 
@@ -305,21 +347,25 @@ Body:
     "device_id": "uuid-v4",
     "fcm_token": "fcm-token-string",
     "platform": "android",
-    "os_version": "Android 14"
+    "os_version": "Android 14",
+    "timezone": "Asia/Seoul"
   }
 }
 Response: 201 Created
 {
   "user_id": 1,
   "invite_code": "K7M-4PXR",
-  "device_token": "generated-bearer-token"
+  "device_token": "generated-bearer-token",
+  "existing_role": null
 }
 ```
 
 - 기기 정보와 역할만 전송
-- `invite_code`는 서버가 생성 (7자리 영숫자, UNIQUE 보장)
-- `device_token`은 **만료 없이 무제한** 유효
-- 대상자는 구독(subscription) 없음 — 결제는 보호자가 담당
+- `invite_code`��� 서버가 생성 (7자리 영숫자, UNIQUE 보장)
+- `device_token`은 **만료 없이 무제한** ��효
+- `timezone`: IANA 타임존 문자열 (기본값 `Asia/Seoul`)
+- `existing_role`: 동일 device_id로 재등록 시 기존 역할 반환 (요청 role과 다를 때만 포함, 동일하면 `null`)
+- 대��자는 구독(subscription) 없음 — 결제는 보���자가 담당
 - 서버는 `users`, `devices` 테이블에 각각 레코드 생성
 
 
@@ -395,7 +441,11 @@ Response: 200 OK
       "invite_code": "K7M-4PXR",
       "last_seen": "2026-03-18T14:32:00+09:00",
       "status": "normal",
-      "alert": null
+      "alert": null,
+      "device_id": "uuid-v4",
+      "heartbeat_hour": 18,
+      "heartbeat_minute": 0,
+      "battery_level": 85
     }
   ],
   "max_subjects": 5,
@@ -405,6 +455,9 @@ Response: 200 OK
 
 - `status`: `normal` (정상), `warning` (경고)
 - `alert`: 활성 경고가 있으면 `{ "id": 10, "days_inactive": 2 }`, 없으면 `null`
+- `device_id`: 대상자 기기 고유 ID
+- `heartbeat_hour`, `heartbeat_minute`: 대상자의 heartbeat 예약 시각
+- `battery_level`: 마지막 heartbeat 시 배터리 잔량 (0~100, 없으면 `null`)
 - 이름 없음 — 클라이언트가 로컬 별칭과 `invite_code`를 매칭하여 표시
 
 
@@ -442,19 +495,25 @@ Body:
 {
   "device_id": "uuid-v4",
   "timestamp": "2026-03-18T14:32:00+09:00",
+  "manual": false,
   "steps_delta": 342,
   "suspicious": false,
   "battery_level": 85
 }
+// manual: 사용자가 직접 "안부 보고하기" 버튼을 눌렀을 때 true (기본값 false)
+//         ※ 클라이언트가 동일 날짜 재시도를 lastManualReportDate로 차단하므로, 서버에 도달한 manual=true는 당일 첫 수동 보고
 // steps_delta:
-//   - 자동 (manual=false) → 오늘 자정 ~ 현재 시각 누적 걸음수 (권한 거부 시 null)
-//   - 수동 (manual=true)  → **항상 null** (클라이언트가 활동 정보 알림 추가 생성을 차단하기 위해 강제 null)
+//   - 자동/수동 공통 → 오늘 자정 ~ 현재 시각 누적 걸음수 (권한 거부 시 null)
+//   - 활동 정보 알림은 서버가 `manual=false AND steps_delta > 0` 조건일 때만 생성하므로
+//     수동 보고가 걸음수를 실어 와도 "수동 안부 확인" 알림 외 추가 알림은 발생하지 않는다.
+//   - 일별 걸음수 이력(`heartbeat_logs`)은 자동/수동 모두 집계 대상이라, 자동 heartbeat이 실패한 날에도
+//     수동 보고로 당일 걸음수 기록을 확보할 수 있다.
 Response: 200 OK
 {
   "status": "ok",
   "server_time": "2026-03-18T14:32:01+09:00",
-  "heartbeat_hour": 9,
-  "heartbeat_minute": 30
+  "heartbeat_hour": 18,
+  "heartbeat_minute": 0
 }
 ```
 
@@ -463,18 +522,56 @@ Response: 200 OK
 - 대상자는 구독과 무관하게 항상 heartbeat 전송 (구독은 보호자가 관리)
 - 보호자 구독이 만료된 경우, heartbeat는 수신하되 보호자에게 경고/알림을 발송하지 않음
 - **서버 판정 로직** (상세: [heartbeat_flowchart.md](heartbeat_flowchart.md) 차트 2):
+  - `is_first_today` 판정: 기기 로컬 타임존 자정 이후 수신 이력 — `heartbeat_logs` INSERT **전**에 조회해야 정확 (INSERT 이후엔 항상 false). `auto_report` / `steps` 알림 **중복 방지에만** 사용. heartbeat_logs INSERT는 매번 수행 (이력·차트용)
   - `battery_level` ≤ 10% + 기존 info 경고 없으면 → 정보 등급 1회 발송 (중복 방지, DND 적용)
-  - `suspicious` = false:
-    - 활성 경고 있으면 → 완전 해소 + 보호자 Push "정상 복귀" (정보 등급 DND 적용)
-    - 활성 경고 없고 `manual` = true → 보호자 Push "수동 안부 확인" (정보 등급 DND 적용)
-    - 활성 경고 없고 `manual` = false → 보호자 Push "오늘 안부 확인 완료" (정보 등급 DND 적용)
-  - `suspicious` = true → warning/urgent 경고를 caution으로 하향 (정상 복귀 알림 없음)
-    - 1회 → 주의 등급 발생 (caution 중복 방지)
-    - 2회 이상 → 경고 등급 발생 (warning/urgent 없을 때만)
-  - 보호자 설정 "안부 확인 알림 ON" 시 → 대상자에게 안부 확인 Push 발송 (suspicious 2회+)
+  - `suspicious` = false → `resolve_active_alerts` 호출 후 반환된 `resolved_levels` 기준 분기:
+    - caution / warning / urgent 중 **하나라도** 해소 → "정상 복귀" Push (auto_report 중복이라 스킵)
+    - info(배터리)만 해소 또는 해소 없음:
+      - `manual = true` → "수동 안부 확인" Push (사용자 의도적 액션이라 매번 발송, is_first_today 가드 없음)
+      - `manual = false AND is_first_today` → "오늘 안부 확인 완료" Push (당일 1회) + `steps_delta > 0`이면 활동 정보 알림 동시 생성 (당일 1회)
+  - `suspicious` = true:
+    - 기존 warning/urgent 경고 → caution으로 하향 (정상 복귀 알림 없음)
+    - suspicious_count=1 → caution 등급 + `message_key="caution_suspicious"` + `push_caution(reason="suspicious")` (중복 방지)
+    - suspicious_count=2 → warning 등급 + `message_key="warning_suspicious"` + `push_warning(reason="suspicious")` (warning/urgent 없을 때만)
+    - suspicious_count≥3 → urgent 등급 + `message_key="urgent_suspicious"` + `push_urgent(reason="suspicious")` (매일 반복, days_inactive 반영)
+    - 보호자 경고 클리어 시 suspicious_count 리셋 → 다음 suspicious부터 1차 재시작
+    - suspicious 경로는 scheduler 미수신 경로(`warning`/`urgent`)와 별도 문구("활동 기록 없음" — 걸음 0 + 발화 시점 기기 미사용)로 분리됨
 
 
-### 4.7 구독 상태 확인 (보호자용)
+### 4.7 긴급 도움 요청 (대상자 전용)
+```
+POST /api/v1/emergency
+Headers:
+  Authorization: Bearer <device_token>  (대상자)
+Body:
+{
+  "device_id": "uuid-v4",
+  "location": {                    // optional — 사용자 동의 시에만 첨부
+    "latitude": 37.5665,           // -90.0 ~ 90.0
+    "longitude": 126.9780,         // -180.0 ~ 180.0
+    "accuracy_meters": 12.5,       // optional, ge=0
+    "captured_at": "2026-04-19T14:32:00+09:00"  // optional, ISO 8601
+  }
+}
+Response: 200 OK
+{
+  "status": "ok",
+  "message": "긴급 알림이 전송되었습니다"
+}
+```
+
+- **대상자만** 호출 가능 (`require_subject` 인증, 보호자가 호출 시 403)
+- 기존 heartbeat 경고 에스컬레이션(suspicious_count, days_inactive)과 **완전히 독립** 동작
+- 즉시 urgent 등급 경고 생성 (caution→warning→urgent 단계를 거치지 않음)
+- `alerts` 테이블에 `alert_level='urgent'`, `note='emergency_request'`로 저장 (위치 저장 안 함 — alerts는 활성 상태 추적 전용)
+- `notification_events` 테이블에 `message_key='emergency'`로 저장. `location` 필드 첨부 시 `location_lat/lng/accuracy/captured_at` 컬럼에 같이 기록 (모두 nullable, 권한 거부/GPS 실패 시 생략 가능)
+- 연결된 보호자 전원에게 긴급 Push 발송 (DND 무시, `asyncio.gather` 병렬). FCM `data` 필드에 `lat`/`lng`/`accuracy` 값이 있을 때만 문자열로 포함 — 보호자 앱이 이 값으로 지도 페이지 라우팅
+- 보호자 구독 만료와 무관하게 항상 발송
+- 클라이언트에서 확인 다이얼로그를 표시하여 오탐 방지
+- 위치 프라이버시: 정기 heartbeat에는 수집하지 않으며, 저장 범위는 `notification_events` 1곳, 보관 기간은 최대 24시간 (자정 정리 스케줄러가 삭제)
+
+
+### 4.8 구독 상태 확인 (보호자용) 
 ```
 GET /api/v1/subscription
 Headers:
@@ -492,54 +589,69 @@ Response: 200 OK
 - 보호자만 호출 가능 (대상자가 호출 시 403)
 
 
-### 4.8 구독 갱신 (인앱 결제 영수증 검증, 보호자용)
+### 4.9 구독 갱신 (인앱 결제 영수증 검증, 보호자용)
 ```
 POST /api/v1/subscription/verify
 Headers:
-  Authorization: Bearer <device_token>  (보호자)
+  Authorization: Bearer <device_token>  (보호자만 — require_guardian)
 Body:
 {
-  "platform": "android",
-  "product_id": "anbu_yearly",
+  "platform": "android",                 // "android" | "ios"
+  "product_id": "anbu_yearly",           // 클라이언트 표시용 (서버는 응답 productId로 재검증)
   "receipt": "purchase-token-string"
 }
 Response: 200 OK
 {
   "plan": "yearly",
-  "expires_at": "2027-03-18T00:00:00+09:00",
+  "expires_at": "2027-03-18T00:00:00+00:00",  // ISO 8601 UTC
   "is_active": true
 }
 ```
 
 - 단일 상품 (`anbu_yearly`) — 대상자 최대 5명, 티어 구분 없음
+- **`receipt` 포맷 (클라이언트 합의)**:
+  - **iOS**: `PurchaseDetails.purchaseID` (= transactionId 문자열)
+  - **Android**: `verificationData.serverVerificationData` (= purchaseToken)
+- **검증 흐름** (`services/subscription_service.py::_verify_and_persist`):
+  1. `platform ∈ {ios, android}` 검증 (그 외 → 400)
+  2. 플랫폼별 검증:
+     - **iOS**: `verify_apple_transaction(receipt)` — App Store Server API `get_all_subscription_statuses(transactionId)` 호출, Production 우선 → 404 시 Sandbox 재시도 (Apple 권장 fallback). JWS 페이로드 디코드 후 정규화 식별자로 `originalTransactionId` 추출
+     - **Android**: `verify_google_purchase(receipt)` — Play Developer API `androidpublisher.purchases.subscriptionsv2.get` 호출. `subscriptionState ∈ {ACTIVE, IN_GRACE_PERIOD}` (= `GOOGLE_ACTIVE_STATES`)만 활성 인정 (그 외 → 400). `acknowledgementState == ACKNOWLEDGEMENT_STATE_PENDING`이면 서버에서 자동 `acknowledge` 호출 (3일 경과 시 Google 자동 환불 방지 안전망). 정규화 식별자로 `purchaseToken` 추출
+  3. **응답 productId 재검증**: 클라이언트가 보낸 `product_id`는 무시하고, Apple/Google 응답의 productId가 `config.IAP_PRODUCT_ID`(=`anbu_yearly`)와 일치하는지 확인 (다른 상품 영수증으로 yearly entitlement 우회 차단). 불일치 → 400
+  4. `expires_at > UTC now` 재검증 (이미 만료 → 400)
+  5. `subscriptions` 테이블 upsert: `plan='yearly'`, `expires_at=응답값`, `receipt_data=정규화 식별자`, `platform=ios|android`
+- `receipt_data` 컬럼에는 정규화된 식별자만 저장 (iOS: `originalTransactionId`, Android: `purchaseToken`). RTDN 수신 시 이 식별자로 user 역매핑하는 키로 사용 (§4.22 참조)
+- **환경변수**: `APPLE_IAP_ISSUER_ID`, `APPLE_IAP_KEY_ID`, `APPLE_IAP_KEY_P8` (single-line `\n` 자동 복원), `APPLE_BUNDLE_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_PACKAGE_NAME`, `IAP_PRODUCT_ID`
 
 
-### 4.9 구독 복원 (보호자 앱 재설치 시)
+### 4.10 구독 복원 (보호자 앱 재설치 시)
 ```
 POST /api/v1/subscription/restore
 Headers:
-  Authorization: Bearer <device_token>  (보호자)
+  Authorization: Bearer <device_token>  (보호자만 — require_guardian)
 Body:
 {
-  "platform": "android",
+  "platform": "android",                 // "android" | "ios"
   "product_id": "anbu_yearly",
   "receipt": "purchase-token-string"
 }
 Response: 200 OK
 {
   "plan": "yearly",
-  "expires_at": "2027-03-18T00:00:00+09:00",
+  "expires_at": "2027-03-18T00:00:00+00:00",
   "is_active": true,
-  "restored": true
+  "restored": true                       // /restore 전용 플래그
 }
 ```
 
-- 보호자 앱 재설치 후 Apple/Google에서 기존 구독 영수증을 가져와 서버에 검증 요청
+- 보호자 앱 재설치 / 기기 교체 후 Apple/Google에서 기존 구독 영수증을 가져와 서버에 검증 요청
 - 유효한 구독이 확인되면 새 보호자 계정에 구독 활성화
+- **`/verify`와 동일한 `_verify_and_persist` 검증 로직 재사용** + 응답에 `restored: true` 플래그만 추가. 즉 검증 실패 케이스(미활성 state, productId 불일치, 만료된 구독, ACK pending 자동 호출 등)는 양 엔드포인트에서 동일하게 동작
 - 인앱 결제는 보호자의 Apple ID / Google 계정에 귀속되므로 개인정보 없이도 복구 가능
+- 클라이언트는 [구독 복원] 탭 → `restorePurchases()` → `purchaseStream`의 `PurchaseStatus.restored` 수신 시 이 엔드포인트 호출. 복원할 영수증이 없을 때는 클라이언트가 5초 안전망으로 사용자에게 "복원할 구독이 없습니다" 정보 안내 (서버 호출 발생하지 않음)
 
 
-### 4.10 경고 목록 조회 (보호자용)
+### 4.11 경고 목록 조회 (보호자용)
 ```
 GET /api/v1/alerts?subject_user_id={id}
 Headers:
@@ -565,7 +677,7 @@ Response: 200 OK
 - 이름 없음 — `invite_code`로 식별, 클라이언트가 로컬 별칭과 매칭
 
 
-### 4.11 경고 클리어 (보호자용)
+### 4.12 경고 클리어 (보호자용)
 
 #### 4.11.1 개별 경고 클리어
 ```
@@ -619,7 +731,7 @@ Response: 200 OK
 - 보호자 본인에게 연결된 대상자의 경고만 클리어 가능 (권한 검증)
 
 
-### 4.12 FCM 토큰 갱신
+### 4.13 FCM 토큰 갱신
 ```
 PUT /api/v1/devices/fcm-token
 Headers:
@@ -637,7 +749,7 @@ Response: 200 OK
 - FCM 토큰은 OS에 의해 주기적으로 변경될 수 있으므로 앱 시작 시마다 확인/갱신
 
 
-### 4.13 Heartbeat 시각 변경
+### 4.14 Heartbeat 시각 변경
 ```
 PATCH /api/v1/devices/{device_id}/heartbeat-schedule
 Headers:
@@ -656,16 +768,14 @@ Response: 200 OK
 }
 ```
 
-- **대상자 본인** 또는 **보호자** 모두 호출 가능
-- 보호자가 호출 시: 해당 대상자가 본인에게 연결된 대상자인지 권한 검증
-- 대상자가 호출 시: 본인 기기만 변경 가능
-- 선택 범위: 06:00 ~ 21:00 (30분 단위)
+- **대상자 본인만** 변경 가능 (보호자가 호출 시 403 Forbidden)
+- 대상자 본인 기기(device_id + user_id) 검증
+- 허용 범위: 00:00 ~ 23:59 (시: 0~23, 분: 0~59)
 - 서버에서 `devices.heartbeat_hour`, `devices.heartbeat_minute` 갱신
-- iOS: 다음 Silent Push가 변경된 시각에 발송됨
-- Android: 대상자 기기가 다음 heartbeat 시 응답의 `heartbeat_hour/minute`를 확인하여 WorkManager 재스케줄링
+- 클라이언트가 응답 수신 후 WorkManager/BGTask + 로컬 안전망 알림 재예약
 
 
-### 4.14 앱 버전 체크 (강제 업데이트)
+### 4.15 앱 버전 체크 (강제 업데이트)
 ```
 GET /api/v1/app/version-check?platform=android&current_version=1.0.0
 Response: 200 OK
@@ -696,7 +806,7 @@ client_version >= latest_version → 최신 상태
 **관리:** Admin API(4.15)로 Postman에서 직접 설정
 
 
-### 4.15 앱 버전 설정 (Admin API)
+### 4.16 앱 버전 설정 (Admin API)
 
 > 별도 관리자 페이지 없이 **Postman에서 직접 호출**하여 버전을 관리한다.
 > `ADMIN_SECRET_KEY` 환경변수로 인증한다.
@@ -774,7 +884,77 @@ Response: 200 OK
 - 플랫폼별(android/ios) 독립 관리
 
 
-### 4.16 알림 목록 조회 (보호자용)
+### 4.17 기기 정보 조회
+```
+GET /api/v1/devices/me
+Headers:
+  Authorization: Bearer <device_token>
+Response: 200 OK
+{
+  "device_id": "uuid-v4",
+  "heartbeat_hour": 18,
+  "heartbeat_minute": 0,
+  "last_seen": "2026-03-18T14:32:00+09:00",
+  "subscription_active": true,
+  "subscription_plan": "free_trial",
+  "guardian_count": 1
+}
+```
+
+- 대상자/보호자 모두 호출 가능
+- `subscription_active`: 대상자는 연결된 보호자 중 활성 구독 존재 여부, 보호자는 본인 구독 상태
+- `subscription_plan`: 보호자의 현재 구독 플랜 (`free_trial` / `yearly` / `expired`, 대상자는 `null`)
+  - `free_trial`: 보호자 등록 시 서버 자동 생성 (3개월)
+  - `yearly`: 인앱 결제 완료 후 영수증 검증 시 서버가 변경
+  - `expired`: 서버 스케줄러가 만료 시 자동 변경
+- `guardian_count`: 대상자에 연결된 보호자 수
+- 앱 포그라운드 진입 시 서버 스케줄 동기화 용도
+
+
+### 4.18 보호자 알림 설정 조회/변경
+```
+GET /api/v1/guardian/notification-settings
+Headers:
+  Authorization: Bearer <device_token>
+Response: 200 OK
+{
+  "all_enabled": true,
+  "urgent_enabled": true,
+  "warning_enabled": true,
+  "caution_enabled": true,
+  "info_enabled": true,
+  "dnd_enabled": false,
+  "dnd_start": null,
+  "dnd_end": null
+}
+```
+
+```
+PUT /api/v1/guardian/notification-settings
+Headers:
+  Authorization: Bearer <device_token>
+Body:
+{
+  "all_enabled": true,
+  "urgent_enabled": true,
+  "warning_enabled": true,
+  "caution_enabled": true,
+  "info_enabled": true,
+  "dnd_enabled": true,
+  "dnd_start": "22:00",
+  "dnd_end": "08:00"
+}
+Response: 200 OK
+{ ... 동일 구조 ... }
+```
+
+- 보호자만 호출 가능
+- `dnd_start`, `dnd_end`: HH:MM 형식, 자정 넘김(22:00~08:00) 지원
+- 긴급 등급은 DND 무관하게 항상 Push 발송
+- 알림 설정이 없으면 기본값(전체 ON) 자동 생성
+
+
+### 4.19 알림 목록 조회 (보호자용)
 ```
 GET /api/v1/notifications
 Headers:
@@ -797,6 +977,7 @@ Response: 200 OK
 ```
 
 - 보호자에 연결된 **모든 대상자**의 당일 알림 이벤트를 조회
+- 해당 보호자가 이미 숨김(dismiss) 처리한 알림은 제외 (`dismissed_notifications` 테이블 참조)
 - 알림은 대상자 중심(`notification_events`) 테이블에 저장되므로, 같은 대상자를 보는 모든 보호자가 동일한 알림을 볼 수 있음
 - 보호자별 알림 설정(`guardian_notification_settings`)에 따라 서버에서 필터링하여 반환
   - `all_enabled = false` → 전체 비활성
@@ -805,7 +986,7 @@ Response: 200 OK
 - 파싱 실패 시 기본값 KST(+09:00) 적용
 
 
-### 4.17 알림 전체 삭제 (보호자용)
+### 4.20 알림 전체 숨김 (보호자용)
 ```
 DELETE /api/v1/notifications
 Headers:
@@ -817,11 +998,12 @@ Response: 200 OK
 }
 ```
 
-- 보호자에 연결된 대상자의 당일 알림 이벤트를 전체 삭제
-- 다른 보호자도 동일 대상자의 알림이 삭제됨 (대상자 중심 데이터이므로)
+- 보호자별 숨김(dismiss) 방식: `dismissed_notifications` 테이블에 해당 보호자의 숨김 기록을 저장
+- **다른 보호자에게는 영향 없음** — 동일 대상자의 알림은 다른 보호자에게 여전히 표시됨
+- `notification_events` 원본 데이터는 삭제되지 않음 (자정 정리 스케줄러가 삭제)
 
 
-### 4.18 사용자 탈퇴
+### 4.21 사용자 탈퇴
 ```
 DELETE /api/v1/users/me
 Headers:
@@ -843,6 +1025,100 @@ Response: 204 No Content
 | `users` | 삭제 | 사용자 계정 |
 
 - 대상자 탈퇴 시 연결된 보호자에게 "대상자 탈퇴 알림" Push 발송 (DB 저장 없음)
+
+
+### 4.22 인앱 결제 서버 알림 (RTDN / Server-to-Server Notifications)
+
+> 외부 시스템(Google Cloud Pub/Sub, Apple App Store Connect)이 발신하는 비동기 알림을 수신해 `subscriptions` 테이블을 자동 갱신한다. **`Authorization: Bearer <device_token>` 인증 미사용** — 발신자는 device_token을 보유하지 않는다. 대신 발신자별 서명을 검증한다.
+
+#### 4.22.1 Google Play RTDN (Pub/Sub Push)
+```
+POST /api/v1/iap/google-notifications
+Headers:
+  Authorization: Bearer <OIDC JWT (Pub/Sub Push가 자동 첨부)>
+Body (Pub/Sub envelope):
+{
+  "message": {
+    "data": "<base64-encoded JSON>",
+    "messageId": "...",
+    "publishTime": "..."
+  },
+  "subscription": "projects/{gcp-project}/subscriptions/{subscription}"
+}
+Response: 200 OK
+{ "status": "ok", "kind": "activated|revoked|noop|...", ... }
+```
+
+- **인증**: `google.oauth2.id_token.verify_oauth2_token`로 OIDC JWT 검증
+  - 서명: Google 공개키
+  - audience: `config.PUBSUB_AUDIENCE` 일치 (Pub/Sub Push subscription 생성 시 지정한 값)
+  - email claim: `config.PUBSUB_SERVICE_ACCOUNT_EMAIL` 일치 + `email_verified=true`
+  - 검증 실패 → 401/403 반환
+- **페이로드 디코딩**: `message.data`를 base64 디코딩한 JSON 사용
+  - `testNotification` (Play Console 초기 검증용) / `oneTimeProductNotification` → graceful 무시 (200 반환)
+  - `packageName != GOOGLE_PACKAGE_NAME` → graceful 무시
+- **notificationType 분기** (`services/iap_notification_service.py::handle_google_notification`):
+  | type | 이름 | 처리 |
+  |---|---|---|
+  | 1 | `SUBSCRIPTION_RECOVERED` | 재조회 후 expires_at 갱신 |
+  | 2 | `SUBSCRIPTION_RENEWED` | 재조회 후 expires_at 갱신 |
+  | 3 | `SUBSCRIPTION_CANCELED` | 재조회 — state가 ACTIVE면 expires만 갱신, 비활성이면 expired |
+  | 4 | `SUBSCRIPTION_PURCHASED` | 재조회 후 expires_at 갱신 |
+  | 5 | `SUBSCRIPTION_ON_HOLD` | 즉시 `plan='expired'` |
+  | 6 | `SUBSCRIPTION_IN_GRACE_PERIOD` | 재조회 후 expires_at 갱신 |
+  | 7 | `SUBSCRIPTION_RESTARTED` | 재조회 후 expires_at 갱신 |
+  | 8 | `SUBSCRIPTION_PRICE_CHANGE_CONFIRMED` | noop |
+  | 9 | `SUBSCRIPTION_DEFERRED` | noop |
+  | 10 | `SUBSCRIPTION_PAUSED` | 즉시 `plan='expired'` |
+  | 11 | `SUBSCRIPTION_PAUSE_SCHEDULE_CHANGED` | noop |
+  | 12 | `SUBSCRIPTION_REVOKED` | 즉시 `plan='expired'` |
+  | 13 | `SUBSCRIPTION_EXPIRED` | 즉시 `plan='expired'` |
+- **재조회 = source of truth**: 활성화 type은 알림 본문의 정보를 신뢰하지 않고 `verify_google_purchase(purchaseToken)`로 Play Developer API 재조회 → 최신 `expires_at`/`subscriptionState` 반영. RTDN 순서 역전(RENEWED 직후 EXPIRED 도착 등) 케이스 방어
+- **DB 매핑**: `UPDATE subscriptions SET ... WHERE receipt_data = $purchaseToken AND platform = 'android'`. `receipt_data`는 §4.9의 `/verify` 단계에서 채워진 값
+- **멱등성**: 같은 알림이 재전송돼도 UPDATE 결과 동일
+- **2xx 보장**: 서명 검증 통과 이후엔 어떤 실패도 200 반환 (Pub/Sub 무한 retry 폭주 방지)
+  - 재조회 실패 → `kind=verify_failed`
+  - `UPDATE affected=0` (클라이언트 `/verify` 이전에 RTDN이 먼저 도착한 race) → `kind=not_mapped`
+  - 알 수 없는 type → `kind=noop`
+  - 잘못된 productId → `kind=wrong_product`
+
+#### 4.22.2 Apple App Store Server Notifications V2
+```
+POST /api/v1/iap/apple-notifications
+Headers: (Apple은 별도 Authorization 헤더 없음 — 서명은 payload 내부 JWS)
+Body:
+{
+  "signedPayload": "<JWS>"
+}
+Response: 200 OK
+{ "status": "ok", "kind": "activated|revoked|noop|...", ... }
+```
+
+- **인증**: `app-store-server-library.SignedDataVerifier`로 JWS 서명 검증
+  - x5c 헤더의 인증서 체인을 **Apple Root CA 3종(G2 + G3 + Apple Inc.)**으로 검증 (`apple_root_ca/*.cer` 디렉토리에서 자동 로드)
+  - Apple Computer, Inc. Root Certificate(1995년 발급)는 현 S2S V2 JWS 체인에 사용 안 됨 → 3개로 충분 (2026-05-28 sandbox 테스트 알림 검증으로 확정)
+  - `bundle_id` = `APPLE_BUNDLE_ID` 일치
+  - environment 분기: 환경변수 `APPLE_ENVIRONMENT` 우선, 미설정 시 payload `data.environment` 자동 분기
+  - 검증 실패 → 401 반환
+- **페이로드 디코딩** (`routers/iap_notification.py::_shallow_to_dict`):
+  - `SignedDataVerifier.verify_and_decode_notification()`이 반환하는 `ResponseBodyV2DecodedPayload`·`Data` 등은 `app-store-server-library`의 `attr.s(slots=True)` 기반 모델이라 `vars(obj)/__dict__`가 비어있음. `attr.has()` + `attr.fields()` 기반 재귀 변환 + `rawNotificationType` → `notificationType` 등 enum **raw alias 매핑**으로 처리하여 service 코드가 string 키로 접근 가능
+  - raw alias 영역: `rawNotificationType`/`rawSubtype`/`rawEnvironment`/`rawStatus`/`rawConsumptionRequestReason` → enum 필드명
+- **notificationType 분기** (`services/iap_notification_service.py::handle_apple_notification`):
+  | type | 처리 |
+  |---|---|
+  | `SUBSCRIBED`, `DID_RENEW`, `DID_CHANGE_RENEWAL_STATUS`, `OFFER_REDEEMED`, `PRICE_INCREASE`, `RENEWAL_EXTENDED`, `RENEWAL_EXTENSION` | `verify_apple_transaction(originalTransactionId)` 재조회 후 expires_at 갱신 |
+  | `EXPIRED`, `GRACE_PERIOD_EXPIRED`, `REVOKE`, `REFUND` | 즉시 `plan='expired'` |
+  | `DID_FAIL_TO_RENEW`, `CONSUMPTION_REQUEST`, 그 외 | noop |
+- **DB 매핑**: `UPDATE subscriptions SET ... WHERE receipt_data = $originalTransactionId AND platform = 'ios'`
+- **2xx 보장**: 서명 검증 통과 후엔 무조건 200 (재시도 폭주 방지)
+
+#### 4.22.3 운영 외부 작업
+
+- Google: GCP Pub/Sub Topic 생성 → Push subscription에 OIDC 인증 + audience 지정 → Topic에 `google-play-developer-notifications@system.gserviceaccount.com` (Google Play가 모든 개발자에 공유로 쓰는 글로벌 system 계정)의 `roles/pubsub.publisher` 권한 부여 → Play Console Monetization setup에 topic 등록. UI는 system 계정을 검증 거부할 수 있어 `gcloud pubsub topics add-iam-policy-binding`으로 우회 처리하는 게 표준
+- Apple: Apple Root CA **3종(G2/G3/AppleInc)** 다운로드 + 컨테이너에 번들 (Apple Computer Inc 1995년 인증서는 현 S2S V2 JWS 체인에 사용 안 됨 → 3개로 충분) → App Store Connect "앱 정보 → App Store 서버 알림"에서 Production/Sandbox URL 등록. **Version 선택 옵션은 최근 UI에서 제거되고 신규 등록은 자동 V2 적용** (V1 deprecated)
+- Apple 테스트 알림 발송: App Store Connect UI에서 "Request a Test Notification" 버튼이 제거됨 → `AppStoreServerAPIClient.request_test_notification()` API 직접 호출이 표준 우회 경로 (반환된 `testNotificationToken`으로 서버 로그에서 수신 추적)
+- Railway 환경변수: `PUBSUB_AUDIENCE`, `PUBSUB_SERVICE_ACCOUNT_EMAIL` (Google 필수), `APPLE_ENVIRONMENT` (Apple 선택, 미설정 시 payload `data.environment` 자동 분기), `APPLE_ROOT_CA_DIR` (Apple, 기본 `./apple_root_ca`)
+- 운영 상세는 `.ref/인앱결제-연동-체크리스트.md §8` 참조
 
 
 ---
@@ -876,10 +1152,11 @@ CREATE TABLE IF NOT EXISTS devices (
     os_version      TEXT,
     fcm_token       TEXT,
     steps_delta     INTEGER,                           -- 마지막 heartbeat 이후 걸음수 증가량 (권한 거부 시 NULL)
+    last_steps      INTEGER,                           -- 마이그레이션 호환용 이전 걸음수
     battery_level   INTEGER,                           -- 마지막 배터리 잔량 (0~100)
     suspicious_count INTEGER DEFAULT 0,                -- 연속 suspicious 횟수
-    heartbeat_hour  INTEGER NOT NULL DEFAULT 9,        -- heartbeat 시각 (시, 0~23, 기본 9)
-    heartbeat_minute INTEGER NOT NULL DEFAULT 30,      -- heartbeat 시각 (분, 0~59, 기본 30)
+    heartbeat_hour  INTEGER NOT NULL DEFAULT 18,       -- heartbeat 시각 (시, 0~23, 기본 18)
+    heartbeat_minute INTEGER NOT NULL DEFAULT 0,       -- heartbeat 시각 (분, 0~59, 기본 0)
     timezone        TEXT NOT NULL DEFAULT 'Asia/Seoul', -- 기기 시간대 (IANA timezone)
     last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -894,10 +1171,10 @@ CREATE INDEX IF NOT EXISTS idx_devices_heartbeat_time ON devices (heartbeat_hour
 
 -- 보호자-대상자 매핑 테이블
 CREATE TABLE IF NOT EXISTS guardians (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                  SERIAL PRIMARY KEY,
     subject_user_id     INTEGER NOT NULL REFERENCES users(id),
     guardian_user_id    INTEGER NOT NULL REFERENCES users(id),
-    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(subject_user_id, guardian_user_id)
 );
 
@@ -936,7 +1213,7 @@ CREATE TABLE IF NOT EXISTS alerts (
                         -- cleared/resolved/false_alarm 확정 시 행 즉시 삭제 (이력 미보관)
     days_inactive       INTEGER NOT NULL DEFAULT 1,
     last_seen_at        TIMESTAMPTZ NOT NULL,
-    push_pending        BOOLEAN NOT NULL DEFAULT FALSE,    -- 발송 시간대 외 보류 플래그
+    push_count          INTEGER NOT NULL DEFAULT 0,        -- 발송된 Push 횟수 (최대 5회)
     last_push_at        TIMESTAMPTZ,                       -- 마지막 Push 발송 시각
     resolved_at         TIMESTAMPTZ,
     note                TEXT,
@@ -954,7 +1231,7 @@ CREATE TABLE IF NOT EXISTS heartbeat_logs (
     steps_delta     INTEGER,                           -- heartbeat 이후 걸음수 증가량 (권한 거부 시 NULL)
     suspicious      INTEGER DEFAULT 0,                 -- 활동 지표 미달 (0/1)
     battery_level   INTEGER,
-    client_ts       TIMESTAMPTZ NOT NULL,
+    client_ts       TEXT NOT NULL,                      -- 클라이언트 제공 타임스탬프 (문자열)
     server_ts       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -982,16 +1259,35 @@ ON CONFLICT (platform) DO NOTHING;
 -- 알림 이벤트 테이블 (대상자 중심)
 -- 대상자별 1건 저장, 보호자 조회 시 guardians 테이블 JOIN으로 필터링
 CREATE TABLE IF NOT EXISTS notification_events (
-    id                  SERIAL PRIMARY KEY,
-    subject_user_id     INTEGER NOT NULL,              -- 대상자 user_id
-    invite_code         TEXT,                          -- 대상자 고유 코드 (조회 편의)
-    alert_level         TEXT NOT NULL,                 -- info, caution, warning, urgent, health
-    title               TEXT NOT NULL,
-    body                TEXT NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                    SERIAL PRIMARY KEY,
+    subject_user_id       INTEGER NOT NULL,              -- 대상자 user_id
+    invite_code           TEXT,                          -- 대상자 고유 코드 (조회 편의)
+    alert_level           TEXT NOT NULL,                 -- info, caution, warning, urgent, health
+    message_key           TEXT,                          -- 클라이언트 번역 키 (auto_report, emergency, ...)
+    message_params        TEXT,                          -- JSON 파라미터 (예: {"days": 3})
+    title                 TEXT NOT NULL,
+    body                  TEXT NOT NULL,
+    -- 긴급 도움 요청 시에만 첨부되는 위치 (사용자 동의 기반, 1회성)
+    location_lat          DOUBLE PRECISION,
+    location_lng          DOUBLE PRECISION,
+    location_accuracy     DOUBLE PRECISION,
+    location_captured_at  TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_ne_subject_created ON notification_events (subject_user_id, created_at DESC);
+
+
+-- 알림 숨김 테이블 (보호자별 — 다른 보호자에 영향 없음)
+CREATE TABLE IF NOT EXISTS dismissed_notifications (
+    id                  SERIAL PRIMARY KEY,
+    guardian_user_id    INTEGER NOT NULL REFERENCES users(id),
+    event_id            INTEGER NOT NULL REFERENCES notification_events(id) ON DELETE CASCADE,
+    dismissed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guardian_user_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dn_guardian ON dismissed_notifications (guardian_user_id);
 
 
 -- 보호자 알림 설정 테이블
@@ -1030,33 +1326,7 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 ## 6. 서버 스케줄러
 
 
-### 6.1 iOS/Android Silent Push 발송 (매일 고정 시각)
-```
-실행 주기: 매 분 정각 (APScheduler CronTrigger(second=0))
-
-처리 흐름:
-1. 현재 시각(KST)이 각 기기의 heartbeat 시각(heartbeat_hour:heartbeat_minute)에
-   해당하는 대상자 기기 조회 (iOS/Android 공통)
-   SELECT d.fcm_token, d.device_id, d.platform
-   FROM devices d
-   JOIN users u ON d.user_id = u.id
-   WHERE u.role = 'subject'
-     AND d.heartbeat_hour = :current_hour
-     AND d.heartbeat_minute = :current_minute
-     AND d.fcm_token IS NOT NULL
-
-2. 조회된 기기 전체에 Silent Push 병렬 발송 (asyncio.gather + asyncio.to_thread)
-   - FCM firebase-admin SDK의 send()는 동기 블로킹 함수이므로 asyncio.to_thread로 스레드 풀에서 실행
-   - 모든 기기에 대한 FCM I/O를 동시에 처리하여 N건 순차 발송 대비 응답 시간 대폭 단축
-3. FCM 발송 결과 수집 후 토큰 무효화 기기 DB 업데이트 (순차 — 커넥션 공유)
-
-※ 기본값: heartbeat_hour=9, heartbeat_minute=30 (KST 기준)
-※ 보호자/대상자가 시각 변경 시 devices 테이블의 heartbeat_hour/minute 갱신
-※ CronTrigger(second=0): 매 분 0초에 실행 — 서버 재시작 후에도 정각에 동기화됨
-```
-
-
-### 6.2 경고 생성 스케줄러 (고정 시각 기반 + 등급별 판정)
+### 6.1 경고 생성 스케줄러 (고정 시각 기반 + 등급별 판정)
 
 > 📊 상세 플로우차트: [heartbeat_flowchart.md](heartbeat_flowchart.md) — 차트 3 참조
 
@@ -1072,16 +1342,16 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
    JOIN devices d ON u.id = d.user_id
    WHERE u.role = 'subject'
      AND (d.heartbeat_hour * 60 + d.heartbeat_minute + 120) = :current_minutes_of_day
-     AND d.last_seen < datetime('now', 'start of day')
+     AND d.last_seen < $2  -- 오늘 KST 자정을 UTC로 변환한 값
 
-   ※ 기본: heartbeat_hour=9, heartbeat_minute=30 → 11:30(690분)에 체크
+   ※ 기본: heartbeat_hour=18, heartbeat_minute=0 → 20:00(1200분)에 체크
 
 2. 보호자 구독 확인:
    a. 보호자 구독 만료 → 알림 미발송 (heartbeat는 계속 수신)
    b. 보호자 구독 활성 → 등급 판정 진행
 
 3. 등급 판정 (누적 미수신 횟수 기반):
-   a. battery_level ≤ 10%
+   a. battery_level < 20%
       → 정보 등급 1회 발송 후 종료 (이후 상향 없음, 소리 없음)
       → heartbeat 수신 시 자동 해소
 
@@ -1095,7 +1365,7 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
       → 긴급 등급: "즉시 확인이 필요합니다"
 
    e. urgent 활성 (긴급 지속)
-      → 긴급 반복: days_inactive 증가, 매일 반복 발송
+      → 긴급 반복: days_inactive 증가, push_count 증가, Push 발송은 최대 5회까지
 
 4. DND(방해금지) 설정 반영:
    - 보호자별 DND 시간대 설정 가능 (기본 OFF)
@@ -1108,13 +1378,15 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
    - 긴급 등급: 보호자 확인까지 매일 반복 (종료 없음)
 
 6. 보호자 Push 병렬 발송 (alert_service.send_alert_to_guardians):
-   - 경고 등급 판정 후 연결된 보호자 전체에 Push 발송 시 asyncio.gather 병렬 처리
+   - 경고 등급 판정 후 연결된 보호자 전체에 Push 발송 시 `asyncio.gather + asyncio.to_thread` 패턴
+   - FCM `send()`는 동기 블로킹 호출이라 `to_thread`로 풀어 이벤트 루프 차단 회피
    - 각 보호자의 FCM 발송은 독립적이므로 완전 병렬화 가능
    - DB 작업 없이 FCM I/O만 수행하는 함수이므로 커넥션 공유 문제 없음
+   - **토큰 무효화 DB 업데이트는 순차 처리** (InvalidRegistration/NotRegistered 에러 수신 시 `fcm_token` NULL — 커넥션 공유 이슈 회피 위해 병렬화 안 함, §6.6 참조)
 ```
 
 
-### 6.3 구독 만료 체크 (보호자 기준)
+### 6.2 구독 만료 체크 (보호자 기준)
 ```
 실행 주기: 매일 00:00 KST
 
@@ -1123,7 +1395,7 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
    JOIN subscriptions s ON u.id = s.user_id
    WHERE u.role = 'guardian'
      AND s.plan IN ('free_trial', 'yearly')
-     AND s.expires_at < datetime('now')
+     AND s.expires_at < NOW()
 
 2. 조회된 각 보호자:
    a. subscriptions.plan = 'expired'로 변경
@@ -1132,18 +1404,18 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 3. 구독 만료 시 동작:
    - 대상자 heartbeat는 계속 정상 수신 (대상자 앱에 영향 없음)
    - 해당 보호자에게 경고 알림 발송 중단
-   - 보호자 앱 실행 시 결제 페이지로 자동 전환 (클라이언트 처리)
+   - 보호자 대시보드는 정상 접근 가능 (대상자 목록·상태 조회 가능, 상단에 구독 만료 안내 배너 표시)
 ```
 
 
-### 6.4 보호자 미연결 대상자 자동 정리
+### 6.3 보호자 미연결 대상자 자동 정리
 ```
 실행 주기: 매일 03:00 KST
 
 처리 흐름:
 1. SELECT u.id FROM users u
    WHERE u.role = 'subject'
-     AND u.created_at < datetime('now', '-30 days')
+     AND u.created_at < NOW() - INTERVAL '30 days'
      AND NOT EXISTS (
        SELECT 1 FROM guardians g WHERE g.subject_user_id = u.id
      )
@@ -1162,7 +1434,7 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 ```
 
 
-### 6.5 당일 알림 자정 정리
+### 6.4 당일 알림 자정 정리
 ```
 실행 주기: 매일 00:00 KST
 
@@ -1182,7 +1454,7 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 ```
 
 
-### 6.6 heartbeat_logs 30일 초과 삭제
+### 6.5 heartbeat_logs 30일 초과 삭제
 ```
 실행 주기: 매일 04:00 KST
 
@@ -1193,7 +1465,7 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 ```
 
 
-### 6.7 보호자 Push 발송 실패 처리
+### 6.6 보호자 Push 발송 실패 처리
 ```
 실행 주기: Push 발송 시마다
 
@@ -1202,6 +1474,36 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 2. 해당 보호자 기기의 fcm_token을 NULL 처리
 3. 대상자에게 "보호자 연결 끊김" 일반 Push 발송
 ```
+
+
+### 6.7 보호자 Push 대상 조회 규칙 (중복 전송 방지)
+
+heartbeat 수신·경고 발송·긴급 도움 요청·대상자 탈퇴 Push 등 **대상자 이벤트 → 연결된 보호자 전원에게 Push**를 보내는 모든 경로는 아래 조회 규칙을 따른다.
+
+**규칙:** `guardians JOIN devices` 쿼리에 반드시 `DISTINCT ON (g.guardian_user_id)` + `ORDER BY g.guardian_user_id, d.updated_at DESC` 를 적용하여, 보호자 1명당 **가장 최근 갱신된 `devices` 1건의 `fcm_token`으로만** Push를 발송한다.
+
+```sql
+SELECT DISTINCT ON (g.guardian_user_id)
+       g.guardian_user_id, d.fcm_token, d.locale
+FROM guardians g
+JOIN subscriptions s ON s.user_id = g.guardian_user_id
+JOIN devices d ON d.user_id = g.guardian_user_id
+WHERE g.subject_user_id = $1
+  AND s.plan != 'expired'
+  AND s.expires_at > NOW()
+  AND d.fcm_token IS NOT NULL
+  AND d.fcm_token != ''
+ORDER BY g.guardian_user_id, d.updated_at DESC;
+```
+
+**배경:** `guardians` 테이블에는 `UNIQUE(subject_user_id, guardian_user_id)` 제약이 걸려 있어 보호자-대상자 매핑은 1행으로 유일하나, `devices` 테이블에는 동일 `user_id`에 대해 여러 행이 남아있을 수 있다 (OS/기기 교체, orphan 레코드 등). 단순 JOIN 시 보호자당 N행이 반환되어 **같은 보호자에게 Push가 N회 발송**되는 이슈가 발생하므로 `DISTINCT ON` + `updated_at DESC`로 최신 토큰 1건만 선택한다.
+
+**적용 대상 쿼리 (예시):**
+- `services/heartbeat_service.py::_get_active_guardians` — heartbeat 정상/suspicious 판정 시 보호자 Push (emergency_service도 이 함수를 재사용)
+- `services/alert_service.py::send_alert_to_guardians` — 정보/주의/경고/긴급/배터리 Push
+- `routers/user.py::delete_me` — 대상자 탈퇴 Push (2곳)
+
+신규로 보호자 전원에게 Push를 보내는 쿼리를 추가할 때도 동일 규칙을 적용한다.
 
 
 ---
@@ -1224,15 +1526,21 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 
 ### 7.3 앱 재설치 시 동작
 **대상자 앱 재설치:**
-- 재등록하여 새 계정 생성 (새 invite_code, 새 device_token)
-- 보호자와 재연결 필요 (새 고유 코드 전달)
+- 재등록 시 서버가 device_id로 기존 계정 조회 → 기존 계정 자동 복원
+- 기존 invite_code 유지, device_token만 재발급
+- 보호자 연결 유지 → 재연결 불필요
 - 결제 관련 동작 없음 (대상자는 무료)
 
 **보호자 앱 재설치:**
-- 재등록하여 새 계정 생성 (새 device_token)
-- 대상자와 재연결 필요 (고유 코드 재입력)
-- 유료 구독은 Apple/Google `restoreTransactions`로 복구 가능
-- 개인정보를 수집하지 않으므로 계정 복구 로직 자체가 불필요
+- 재등록 시 서버가 device_id로 기존 계정 조회 → 기존 계정 자동 복원
+- 기존 구독·대상자 연결 유지, device_token만 재발급
+- 대상자 재연결 불필요 (로컬 별칭만 재설정 필요)
+
+**device_id 영속성 보장 (클라이언트):**
+- Android: SSAID(`Settings.Secure.ANDROID_ID`)는 공장 초기화 전까지 유지되므로 자연스럽게 동일 값 전달
+- iOS: `identifierForVendor`는 vendor 앱 전부 삭제 후 재설치 시 값이 변경되므로, 클라이언트가 최초 발급 시 Keychain(`accessibility=unlocked_this_device`)에 백업 → 재설치 시 Keychain 우선 조회로 동일 device_id 복원
+- 서버는 플랫폼과 무관하게 동일 device_id를 수신하므로 위 복원 로직(기존 계정 자동 복원)이 그대로 유효
+- iOS Keychain 백업은 계정 복원 전용이며 iCloud 동기화 차단 → fingerprinting 정책과 무관
 
 
 ---
@@ -1243,12 +1551,12 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 
 ### 8.1 통신
 - HTTPS 필수 (TLS 1.2+)
-- heartbeat payload 최소화 (가속도 센서 값 + 의심 플래그만 포함, 민감 정보 없음)
+- heartbeat payload 최소화 (걸음수 + suspicious 플래그 포함, 민감 정보 없음)
 
 
 ### 8.2 데이터
-- **개인정보 미수집**: 이름, 전화번호, 위치정보, 사용 앱 목록 등 일절 저장하지 않음
-- 수집 데이터: device_id, 가속도+자이로 센서 값, suspicious 플래그, 앱 버전 — 최소 수준
+- **개인정보 최소 저장**: 이름, 전화번호, 사용 앱 목록 일절 저장하지 않음. 위치정보는 정기 heartbeat에서 미수집이며, 대상자가 긴급 도움 요청 버튼을 누른 경우에만 사용자 동의 하에 `notification_events` 테이블에 1회 저장되고 대상자 기기 타임존 자정 스케줄러가 일괄 삭제
+- 수집 데이터: device_id, 걸음수(steps_delta), suspicious 플래그, 배터리 잔량, 앱 버전, 긴급 요청 시 lat/lng/accuracy — 최소 수준
 - DB 유출 시에도 개인 식별 불가 (invite_code, device_id만 존재)
 
 
@@ -1269,7 +1577,138 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 ---
 
 
-## 9. Python 핵심 패키지
+## 9. 알림 다국어(i18n) 설계
+
+
+### 9.1 개요
+
+서버는 20개 언어로 Push 알림 메시지를 발송하며, `notification_events`에 `message_key`/`message_params`를 저장하여 클라이언트가 로컬 언어로 재렌더링할 수 있도록 한다.
+
+**지원 언어 (20개):**
+ko_KR, en_US, ja_JP, zh_CN, zh_TW, de_DE, fr_FR, es_ES, it_IT, nl_NL, pt_BR, ru_RU, ar_SA, tr_TR, pl_PL, vi_VN, th_TH, sv_SE, hi_IN, id_ID
+
+
+### 9.2 기기 locale 저장
+
+클라이언트가 기기 등록(`POST /api/v1/users`) 및 FCM 토큰 갱신(`PUT /api/v1/devices/fcm-token`) 시 `locale` 필드를 전달한다. 서버는 `devices.locale` 컬럼에 저장한다.
+
+```sql
+-- devices 테이블 locale 컬럼
+locale TEXT NOT NULL DEFAULT 'ko_KR'
+```
+
+- 기본값: `ko_KR` (미전달 시)
+- 형식: `{languageCode}_{countryCode}` (예: `en_US`, `ja_JP`)
+
+
+### 9.3 서버 Push 메시지 다국어 발송
+
+`i18n/messages.py`에 20개 언어별 메시지 딕셔너리를 관리한다.
+
+```python
+# i18n/messages.py
+MESSAGES: dict[str, dict[str, str]] = {
+    "ko_KR": {
+        "push_battery_low_title": "🔋 폰 배터리 부족",
+        "push_caution_title": "⚠ 주의",
+        "push_warning_title": "⚠ 경고",
+        "push_urgent_title": "🚨 긴급",
+        "push_auto_report_title": "✅ 오늘 안부 확인 완료",
+        ...
+    },
+    "en_US": {
+        "push_battery_low_title": "🔋 Low Battery",
+        ...
+    },
+    # ... 20개 언어
+}
+
+def get_message(locale: str, key: str, **kwargs) -> str:
+    """locale별 메시지 반환. 미지원 locale → en_US fallback."""
+    msgs = MESSAGES.get(locale, MESSAGES["en_US"])
+    template = msgs.get(key, MESSAGES["en_US"].get(key, key))
+    return template.format(**kwargs) if kwargs else template
+```
+
+**Push 발송 흐름:**
+```
+heartbeat 수신 / 미수신 판정
+    ↓
+보호자 목록 조회 (guardians + devices JOIN → fcm_token, locale 획득)
+    ↓
+각 보호자의 locale로 get_message() 호출 → 번역된 title/body 생성
+    ↓
+FCM Push 발송 (보호자별 locale 독립)
+```
+
+- 모든 push_service 함수는 `locale: str = "ko_KR"` 파라미터를 수신
+- 탈퇴 Push, 구독 만료 Push 등도 동일하게 locale 적용
+
+
+### 9.4 notification_events 다국어 저장
+
+`notification_events` 테이블에 `message_key`와 `message_params`를 추가 저장한다.
+`title`/`body` 컬럼은 ko_KR 기본값으로 저장하며, 클라이언트가 `message_key`로 로컬 번역을 렌더링할 수 있다.
+
+```sql
+-- notification_events 테이블 추가 컬럼
+message_key    TEXT,          -- 클라이언트 번역 키 (예: 'auto_report', 'urgent')
+message_params TEXT,          -- JSON 파라미터 (예: '{"days": 3}')
+```
+
+**message_key 목록:**
+
+| message_key | alert_level | 설명 | params |
+|---|---|---|---|
+| `auto_report` | info | 자동 안부 확인 완료 | - |
+| `manual_report` | info | 수동 안부 확인 | - |
+| `battery_low` | info | 배터리 20% 미만 | - |
+| `battery_dead` | info | 배터리 방전 추정 | `{"battery_level": 15}` |
+| `caution_suspicious` | caution | 활동 기록 없음 (suspicious=true 1회) | - |
+| `caution_missing` | caution | 안부 미수신 1회 (scheduler) | - |
+| `warning` | warning | 연속 미수신 2회 (scheduler) | - |
+| `warning_suspicious` | warning | 활동 기록 연속 없음 (suspicious=true 2회) | - |
+| `urgent` | urgent | 긴급 미수신 3회+ (scheduler) | `{"days": 3}` |
+| `urgent_suspicious` | urgent | 활동 기록 연속 없음 (suspicious=true 3회+) | `{"days": 3}` |
+| `steps` | health | 걸음수 활동 정보 ("오늘 N보를 걸으셨습니다") | `{"steps": "342"}` |
+| `emergency` | urgent | 긴급 도움 요청 (대상자 직접) | - |
+| `cleared_by_guardian` | info | 보호자 수동 경고 클리어 (다른 보호자에게 발송) | - |
+
+**API 응답 (GET /api/v1/notifications):**
+```json
+{
+  "notifications": [
+    {
+      "id": 1,
+      "subject_user_id": 1,
+      "invite_code": "K7M-4PXR",
+      "alert_level": "info",
+      "title": "✅ 오늘 안부 확인 완료",
+      "body": "보호 대상자가 오늘 예정시각에 알림을 보냈습니다.",
+      "message_key": "auto_report",
+      "message_params": null,
+      "created_at": "2026-04-06T09:32:00+00:00"
+    }
+  ]
+}
+```
+
+
+### 9.5 프로젝트 구조
+
+```
+server/
+├── i18n/
+│   ├── __init__.py
+│   └── messages.py              # 20개 언어 Push 메시지 딕셔너리 + get_message()
+├── ...
+```
+
+
+---
+
+
+## 10. Python 핵심 패키지
 
 | 패키지 | 용도 |
 |--------|------|
@@ -1285,7 +1724,7 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 ```
 fastapi==0.115.*
 uvicorn==0.34.*
-aiosqlite==0.21.*
+asyncpg==0.30.*
 apscheduler==3.11.*
 firebase-admin==6.6.*
 python-dotenv==1.1.*
@@ -1295,7 +1734,7 @@ python-dotenv==1.1.*
 ---
 
 
-## 10. 배포 및 인프라
+## 11. 배포 및 인프라
 
 
 ### 10.1 인프라 구성
@@ -1325,10 +1764,17 @@ python-dotenv==1.1.*
   - `FIREBASE_CREDENTIALS`: FCM 인증 키 JSON
   - `ADMIN_SECRET_KEY`: Admin API 인증 키 (Postman에서 앱 버전 설정 시 사용)
 
-**Procfile (Railway 배포 설정):**
+**Dockerfile (Railway 배포 설정):**
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["python", "main.py"]
 ```
-web: uvicorn main:app --host 0.0.0.0 --port $PORT
-```
+
+- `main.py`에서 `PORT` 환경변수를 읽어 uvicorn 직접 실행
 
 
 ### 10.3 데이터베이스 (PostgreSQL)
@@ -1355,11 +1801,12 @@ web: uvicorn main:app --host 0.0.0.0 --port $PORT
 ---
 
 
-## 11. 연동 API 목록 (FrontEnd 참조)
+## 12. 연동 API 목록 (FrontEnd 참조)
 
 | API | 메서드 | 용도 |
 |-----|--------|------|
 | `/api/v1/users` | POST | 사용자 등록 (대상자/보호자) |
+| `/api/v1/users/me` | DELETE | 사용자 탈퇴 (계정 및 관련 데이터 전체 삭제) |
 | `/api/v1/heartbeat` | POST | 안부 확인 heartbeat 수신 |
 | `/api/v1/subjects/link` | POST | 고유 코드로 대상자 연결 (보호자용) |
 | `/api/v1/subjects` | GET | 연결된 대상자 목록 조회 (보호자용) |
@@ -1370,14 +1817,20 @@ web: uvicorn main:app --host 0.0.0.0 --port $PORT
 | `/api/v1/alerts` | GET | 대상자별 경고 목록 조회 (보호자용) |
 | `/api/v1/alerts/{id}/clear` | PUT | 개별 경고 클리어 (보호자가 건강 확인 후) |
 | `/api/v1/alerts/clear-all` | PUT | 대상자별 모든 활성 경고 일괄 클리어 + 적응형 주기 복원 |
-| `/api/v1/notifications` | GET | 당일 알림 목록 조회 (보호자용, 대상자 중심 + 설정 필터링) |
-| `/api/v1/notifications` | DELETE | 당일 알림 전체 삭제 (보호자용) |
-| `/api/v1/users/me` | DELETE | 사용자 탈퇴 (계정 및 관련 데이터 전체 삭제) |
+| `/api/v1/devices/me` | GET | 기기 정보 조회 (스케줄 동기화, 구독 상태 확인) |
 | `/api/v1/devices/fcm-token` | PUT | FCM 토큰 갱신 |
-| `/api/v1/devices/{device_id}/heartbeat-schedule` | PATCH | heartbeat 시각 변경 (대상자/보호자) |
+| `/api/v1/devices/{device_id}/heartbeat-schedule` | PATCH/PUT | heartbeat 시각 변경 (대상자만) |
+| `/api/v1/notifications` | GET | 당일 알림 목록 조회 (보호자용, 대상자 중심 + 설정 필터링) |
+| `/api/v1/notifications` | DELETE | 당일 알림 전체 숨김 (보호자별, 다른 보호자 영향 없음) |
+| `/api/v1/guardian/notification-settings` | GET | 보호자 알림 설정 조회 |
+| `/api/v1/guardian/notification-settings` | PUT | 보호자 알림 설정 변경 (등급별 ON/OFF, DND) |
 | `/api/v1/app/version-check` | GET | 앱 버전 체크 (강제 업데이트 판정) |
 | `/api/v1/admin/app-version` | PUT | 앱 버전 설정 (Admin, Postman용) |
 | `/api/v1/admin/app-version` | GET | 앱 버전 설정 조회 (Admin, Postman용) |
+| `/api/v1/emergency` | POST | 긴급 도움 요청 (대상자 → 보호자 전원 즉시 urgent Push, 에스컬레이션 독립. body.location optional: lat/lng/accuracy/captured_at 첨부 시 `notification_events`에 저장 + FCM data에 포함) |
+| `/api/v1/iap/google-notifications` | POST | Google Play RTDN 수신 (Pub/Sub Push OIDC JWT 인증, device_token 미사용) |
+| `/api/v1/iap/apple-notifications` | POST | Apple S2S Notifications V2 수신 (JWS 서명 검증, device_token 미사용) |
+| `/health` | GET | 헬스체크 |
 
 > FrontEnd 상세는 [PRD-FrontEnd.md](PRD-FrontEnd.md) 참조
 
@@ -1385,13 +1838,13 @@ web: uvicorn main:app --host 0.0.0.0 --port $PORT
 ---
 
 
-## 12. 성공 지표 (서버)
+## 13. 성공 지표 (서버)
 
 | 지표 | 목표 |
 |------|------|
 | 서버 응답 시간 | heartbeat API p99 < 200ms |
 | 서버 가용성 | ≥ 99.5% |
-| Silent Push 발송 성공률 | ≥ 98% |
+| 경고 Push 발송 성공률 | ≥ 98% |
 | 경고 생성 정확도 | 거짓 경고 ≤ 5% |
 | 보호자 Push 전달률 | ≥ 95% |
 
@@ -1399,7 +1852,7 @@ web: uvicorn main:app --host 0.0.0.0 --port $PORT
 ---
 
 
-## 13. 향후 확장 (v2.0+, 참고용)
+## 14. 향후 확장 (v2.0+, 참고용)
 
 - **알림 채널 확장**: 경고 발생 시 SMS, 카카오톡, 이메일 자동 발송
 - **보호자 웹 대시보드**: 관리 대상자 목록, 실시간 상태 모니터링 UI
@@ -1413,7 +1866,7 @@ web: uvicorn main:app --host 0.0.0.0 --port $PORT
 ---
 
 
-## 14. 개발 일정 (예상)
+## 15. 개발 일정 (예상)
 
 | 단계 | 산출물 |
 |------|--------|
