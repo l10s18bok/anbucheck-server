@@ -1,9 +1,25 @@
 import os
+from contextlib import asynccontextmanager
+
 import asyncpg
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 _pool: asyncpg.Pool | None = None
+
+# ─────────────────────────────────────────────────────────────
+# Postgres advisory lock 키 (멀티 인스턴스 단일 실행 보장용)
+#
+# 앱을 N개 인스턴스(Railway 레플리카 또는 uvicorn --workers)로 띄워도
+# 스케줄러 잡과 startup DDL이 단 하나의 인스턴스에서만 실행되도록 직렬화한다.
+# 각 잡/작업마다 프로세스 전역에서 유일한 고정 정수 키를 부여한다.
+# ─────────────────────────────────────────────────────────────
+LOCK_DDL = 100               # startup CREATE TABLE / 마이그레이션
+LOCK_HEARTBEAT_CHECK = 1     # 매 분 미수신 경고 체크
+LOCK_CLEANUP_NOTI = 2        # 자정 알림 정리
+LOCK_SUB_EXPIRE = 3          # 구독 만료 체크
+LOCK_CLEANUP_SUBJECTS = 4    # 미연결 대상자 정리
+LOCK_CLEANUP_LOGS = 5        # heartbeat_logs 30일 초과 삭제
 
 
 async def get_db():
@@ -16,11 +32,53 @@ def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+@asynccontextmanager
+async def try_advisory_lock(key: int):
+    """세션 레벨 pg_try_advisory_lock을 전용 커넥션에 건다 (non-blocking).
+
+    획득 성공 시 acquired=True를 yield하고, 실패하면 False를 yield해 호출부가
+    즉시 양보(잡 스킵)하도록 한다. 멀티 인스턴스에서 같은 분에 여러 스케줄러가
+    동시에 잡을 fire해도 락을 잡은 하나만 실행된다.
+
+    asyncpg 함정 대응:
+    - advisory lock은 세션(커넥션) 레벨이므로 잡는 커넥션과 푸는 커넥션이 같아야 한다.
+      전용 커넥션 1개를 직접 acquire/release하고, 잡 본문은 별도 커넥션을 쓴다.
+    - try/finally로 반드시 unlock + 커넥션 반납 → 풀로 돌아간 커넥션에 락이 남는
+      누수를 차단. (커넥션을 그냥 닫아도 세션 종료로 락은 풀리지만, 풀 재사용을
+      위해 명시적으로 unlock 후 release 한다.)
+    """
+    conn = await _pool.acquire()
+    acquired = False
+    try:
+        acquired = await conn.fetchval("SELECT pg_try_advisory_lock($1)", key)
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                await conn.fetchval("SELECT pg_advisory_unlock($1)", key)
+            except Exception:
+                # unlock 실패해도 커넥션 반납 시 세션 종료로 락은 풀린다.
+                pass
+        await _pool.release(conn)
+
+
 async def init_pool() -> None:
     global _pool
-    _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+    # 풀 크기는 env로 외부화 — N 인스턴스 × max_size가 Postgres max_connections를
+    # 넘지 않도록 운영에서 조정한다 (스케일 시 "too many connections" 방지).
+    min_size = int(os.environ.get("DB_POOL_MIN", "2"))
+    max_size = int(os.environ.get("DB_POOL_MAX", "10"))
+    _pool = await asyncpg.create_pool(DATABASE_URL, min_size=min_size, max_size=max_size)
+
+    # startup DDL을 advisory lock으로 직렬화 — 멀티 인스턴스 동시 기동 시
+    # CREATE INDEX / ALTER TABLE 동시 실행 레이스를 차단한다. blocking lock이라
+    # 후발 인스턴스는 선행 인스턴스의 DDL 완료를 기다린 뒤 IF NOT EXISTS no-op만 수행.
     async with _pool.acquire() as conn:
-        await _create_tables(conn)
+        await conn.execute("SELECT pg_advisory_lock($1)", LOCK_DDL)
+        try:
+            await _create_tables(conn)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock($1)", LOCK_DDL)
 
 
 async def _create_tables(conn: asyncpg.Connection) -> None:
@@ -244,6 +302,18 @@ CREATE TABLE IF NOT EXISTS dismissed_notifications (
 )
 """)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_dn_guardian ON dismissed_notifications (guardian_user_id)")
+
+    # 전역 일관 rate limiting — 인메모리 대신 Postgres에 저장해 멀티 인스턴스에서
+    # 카운터가 공유된다 (인메모리면 인스턴스별이라 한도가 N배로 샌다).
+    # 고정 윈도우(60s): UPSERT 원자 증가로 cross-instance 동시 요청을 직렬화.
+    await conn.execute("""
+CREATE TABLE IF NOT EXISTS rate_limits (
+    bucket       TEXT NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    count        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (bucket, window_start)
+)
+""")
 
     await conn.execute("""
 CREATE TABLE IF NOT EXISTS guardian_notification_settings (

@@ -73,5 +73,13 @@ if __name__ == "__main__":
     import os
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    print(f"[main] Starting uvicorn on port {port}", flush=True)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # 한 컨테이너 내 워커 수. 워커>1이면 각 프로세스가 독립 lifespan(스케줄러+풀)을
+    # 갖지만, 스케줄러 잡은 advisory lock으로 단일 실행되므로 안전하다.
+    # 수평 확장은 Railway 레플리카 수를 늘려도 동일하게 동작한다(엣지 LB는 Railway 담당).
+    workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
+    print(f"[main] Starting uvicorn on port {port} (workers={workers})", flush=True)
+    if workers > 1:
+        # workers>1은 app을 import 문자열로 넘겨야 한다.
+        uvicorn.run("main:app", host="0.0.0.0", port=port, workers=workers)
+    else:
+        uvicorn.run(app, host="0.0.0.0", port=port)

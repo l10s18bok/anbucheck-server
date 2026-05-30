@@ -3,12 +3,14 @@ import asyncpg
 
 from database import get_db
 from middleware.auth import require_guardian
+from middleware import rate_limit
 from models.guardian import (
     SubjectLinkIn, SubjectLinkOut, SubjectListOut, SubjectOut, AlertSummary, StepHistoryOut,
 )
 from services.subject_service import (
     link_subject, get_subjects, unlink_subject, get_step_history_for_subject,
 )
+from config import LINK_RATE_LIMIT
 
 router = APIRouter(prefix="/api/v1/subjects", tags=["subjects"])
 
@@ -19,6 +21,8 @@ async def link(
     user: dict = Depends(require_guardian),
     db: asyncpg.Connection = Depends(get_db),
 ):
+    # 인증된 보호자(user_id) 기준 rate limit — invite_code 무차별 열거 시도 차단.
+    await rate_limit.enforce(db, f"link:{user['user_id']}", LINK_RATE_LIMIT)
     result = await link_subject(db, user["user_id"], body.invite_code)
     s = result["subject"]
     alert = AlertSummary(**s["alert"]) if s["alert"] else None

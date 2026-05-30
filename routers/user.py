@@ -2,16 +2,17 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 import asyncpg
 
 from database import get_db
 from middleware.auth import get_current_user, require_guardian, require_subject
+from middleware import rate_limit
 from models.user import UserRegisterIn, UserRegisterOut, SubscriptionOut
 from services.user_service import register_user, generate_unique_invite_code
 from services import push_service
 from i18n.messages import get_message
-from config import DEFAULT_HEARTBEAT_HOUR, DEFAULT_HEARTBEAT_MINUTE, FREE_TRIAL_DAYS
+from config import DEFAULT_HEARTBEAT_HOUR, DEFAULT_HEARTBEAT_MINUTE, FREE_TRIAL_DAYS, REGISTER_RATE_LIMIT
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,12 @@ async def check_device(
 
 
 @router.post("", response_model=UserRegisterOut, status_code=201)
-async def register(body: UserRegisterIn, db: asyncpg.Connection = Depends(get_db)):
+async def register(body: UserRegisterIn, request: Request, db: asyncpg.Connection = Depends(get_db)):
+    # 미인증 엔드포인트 — 클라이언트 IP 기준 rate limit으로 자원 고갈/DB bloat 방지.
+    # (register_user는 device_id 멱등이라 같은 기기 반복은 무해하나, 매번 새 device_id로
+    #  신규 row를 양산하는 남용은 device_id 키로 못 막으므로 IP 키를 쓴다.)
+    await rate_limit.enforce(db, f"register:{rate_limit.client_ip(request)}", REGISTER_RATE_LIMIT)
+
     if body.role not in ("subject", "guardian"):
         from fastapi import HTTPException, status
         raise HTTPException(status_code=400, detail="role은 'subject' 또는 'guardian'이어야 합니다")

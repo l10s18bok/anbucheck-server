@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -18,6 +19,14 @@ from apscheduler.triggers.cron import CronTrigger
 
 import asyncpg
 
+from database import (
+    try_advisory_lock,
+    LOCK_HEARTBEAT_CHECK,
+    LOCK_CLEANUP_NOTI,
+    LOCK_SUB_EXPIRE,
+    LOCK_CLEANUP_SUBJECTS,
+    LOCK_CLEANUP_LOGS,
+)
 from i18n.messages import get_message
 from services.alert_service import get_guardian_settings, should_send, should_push
 from services.heartbeat_service import _save_notification_event, _get_active_guardians, _get_invite_code, _push_to_guardians
@@ -27,6 +36,26 @@ logger = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
 
 scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
+
+
+def _singleton(lock_key: int):
+    """잡을 advisory lock으로 감싸 멀티 인스턴스에서 단 하나만 실행하게 한다.
+
+    락을 못 잡으면(다른 인스턴스가 실행 중) 즉시 양보한다. 락 보유 인스턴스가
+    죽어도 다음 fire 때 다른 인스턴스가 락을 잡아 자가 치유된다 (SPOF 없음).
+    잡 본문은 DB 트랜잭션으로 감싸지 않고 기존처럼 짧은 statement를 유지한다
+    — push 네트워크 호출 동안 tx/락을 길게 들고 있지 않기 위함.
+    """
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrapper():
+            async with try_advisory_lock(lock_key) as acquired:
+                if not acquired:
+                    logger.debug("[%s] 다른 인스턴스가 실행 중 — 스킵", fn.__name__)
+                    return
+                await fn()
+        return wrapper
+    return deco
 
 
 # ─────────────────────────────────────────────────────────────
@@ -290,7 +319,11 @@ async def job_cleanup_old_logs() -> None:
         await db.execute(
             "DELETE FROM heartbeat_logs WHERE server_ts < NOW() - INTERVAL '30 days'"
         )
-    logger.info("30일 초과 heartbeat_logs 삭제 완료")
+        # rate_limits 윈도우는 60초짜리라 1시간만 지나도 무의미 — 테이블 무한 증식 방지.
+        await db.execute(
+            "DELETE FROM rate_limits WHERE window_start < NOW() - INTERVAL '1 hour'"
+        )
+    logger.info("30일 초과 heartbeat_logs + 만료 rate_limits 삭제 완료")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -298,14 +331,16 @@ async def job_cleanup_old_logs() -> None:
 # ─────────────────────────────────────────────────────────────
 
 def setup_scheduler() -> AsyncIOScheduler:
-    scheduler.add_job(job_heartbeat_check, CronTrigger(second=0), id="heartbeat_check", replace_existing=True)
+    # 각 잡을 advisory lock으로 감싼다 — 멀티 인스턴스에서 같은 시각에 여러 스케줄러가
+    # fire해도 락을 잡은 하나만 실제로 실행되어 중복 push/중복 정리를 차단한다.
+    scheduler.add_job(_singleton(LOCK_HEARTBEAT_CHECK)(job_heartbeat_check), CronTrigger(second=0), id="heartbeat_check", replace_existing=True)
     logger.info("스케줄러 등록: Heartbeat 미수신 체크 — 매 분 정각 실행")
-    scheduler.add_job(job_cleanup_notifications, CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="cleanup_noti", replace_existing=True)
+    scheduler.add_job(_singleton(LOCK_CLEANUP_NOTI)(job_cleanup_notifications), CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="cleanup_noti", replace_existing=True)
     logger.info("스케줄러 등록: 알림 자정 정리 — 매일 00:00 KST")
-    scheduler.add_job(job_subscription_expire_check, CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="sub_expire", replace_existing=True)
+    scheduler.add_job(_singleton(LOCK_SUB_EXPIRE)(job_subscription_expire_check), CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="sub_expire", replace_existing=True)
     logger.info("스케줄러 등록: 구독 만료 체크 — 매일 00:00 KST")
-    scheduler.add_job(job_cleanup_orphan_subjects, CronTrigger(hour=3, minute=0, timezone="Asia/Seoul"), id="cleanup_subjects", replace_existing=True)
+    scheduler.add_job(_singleton(LOCK_CLEANUP_SUBJECTS)(job_cleanup_orphan_subjects), CronTrigger(hour=3, minute=0, timezone="Asia/Seoul"), id="cleanup_subjects", replace_existing=True)
     logger.info("스케줄러 등록: 보호자 미연결 대상자 정리 — 매일 03:00 KST")
-    scheduler.add_job(job_cleanup_old_logs, CronTrigger(hour=4, minute=0, timezone="Asia/Seoul"), id="cleanup_logs", replace_existing=True)
+    scheduler.add_job(_singleton(LOCK_CLEANUP_LOGS)(job_cleanup_old_logs), CronTrigger(hour=4, minute=0, timezone="Asia/Seoul"), id="cleanup_logs", replace_existing=True)
     logger.info("스케줄러 등록: heartbeat_logs 30일 초과 삭제 — 매일 04:00 KST")
     return scheduler
