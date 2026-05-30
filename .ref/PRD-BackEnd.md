@@ -1121,6 +1121,110 @@ Response: 200 OK
 - 운영 상세는 `.ref/인앱결제-연동-체크리스트.md §8` 참조
 
 
+#### 4.22.4 구독 라이프사이클 통합 플로우
+
+> 결제부터 만료까지의 전체 사이클을 Apple/Google 공통 관점에서 정리. type 매핑 디테일은 §4.22.1/§4.22.2 표 참조.
+
+**설계 원칙 — Push 기반 (Apple/Google → 우리 서버)**
+
+- Apple/Google이 구독 상태 변경 시 RTDN으로 우리 서버에 push (수 초 내 도달)
+- **우리 서버는 Apple/Google API를 polling 하지 않음** — RTDN을 source of truth로 사용
+- Push 선택 이유: 즉시 반영, Apple/Google API rate limit·비용 회피, 대규모 사용자 지원
+- 안전망: `services/subscription_service.py:29` 응답 시점에 `is_active = expires_dt > now and plan != 'expired'`로 시간 기반 1회 비교 (polling 아님). RTDN 누락/지연 시에도 클라가 만료 카드 정확 표시
+
+**정상 사이클 (Production)**
+
+```
+[결제 시점]
+사용자 [구독하기] 탭 → Apple/Google 결제 다이얼로그 → 결제 완료
+   ↓
+RTDN: SUBSCRIBED(Apple) / PURCHASED(Google) 발송
+   ↓
+클라: POST /api/v1/subscription/verify (영수증 전송)
+   ↓
+서버: verify_apple_transaction / verify_google_purchase 호출로 검증
+   ↓
+DB: subscriptions UPSERT (plan='yearly', expires_at=<1년 후>, receipt_data=<originalTransactionId / purchaseToken>)
+   ↓
+클라: onVerified 콜백 → _loadSubscription() → 카드 "프리미엄 구독 중" + [구독 관리]
+
+[1년 후 자동 갱신 시점 — 사용자가 자동 갱신 OFF 안 한 경우]
+Apple/Google: 1년 결제 사이클 도달 → 자동 청구 → 갱신 처리
+   ↓
+RTDN: DID_RENEW(Apple) / RENEWED(Google) 발송
+   ↓
+서버: 재조회 후 expires_at 갱신 (다음 1년 연장)
+   ↓
+클라: 카드 "프리미엄 구독 중" 유지 (UI 변화 없음)
+
+[사용자가 자동 갱신 OFF 한 경우 — iOS 설정 → 구독 / Google Play 구독에서 토글]
+현재 기간(expires_at)까지는 active 유지
+   ↓
+expires_at 도달 → 자동 결제 안 됨 → 만료 처리
+   ↓
+RTDN: EXPIRED(Apple) / EXPIRED(Google) 발송
+   ↓
+서버: plan='expired' UPDATE
+   ↓
+클라: 카드 "구독 만료" + [구독하기] 재표시 (다음 _loadSubscription 호출 시점)
+
+[환불/취소 케이스]
+사용자 환불 요청 → Apple/Google 처리
+   ↓
+RTDN: REVOKE(Apple) / REVOKED(Google) 발송
+   ↓
+서버: plan='expired' UPDATE 즉시
+```
+
+**Sandbox 테스트 사이클 (시간 압축)**
+
+| 환경 | 1년 압축 시간 | 자동 갱신 횟수 | 총 사이클 | 비고 |
+|---|---|---|---|---|
+| Apple Sandbox | **1년 = 1일(24h)** | 6회 후 자동 만료 | **7일** | TestFlight/Xcode Dev 공통 |
+| Google Sandbox (License Tester) | **1년 = 30분** | 6회 후 자동 만료 | **3시간 30분** | §9-1 실측 검증 완료 |
+
+**Apple Sandbox iOS 설정 UI 특이사항 (사용자 오해 유발 포인트)**
+
+- iOS 설정 → Apple ID → 구독에서 **sandbox 영수증은 표시되지 않음** (Apple의 sandbox/production 채널 완전 분리 정책)
+- "구독 중인 항목 없음" 표시는 sandbox에서 **만료 의미가 아니다** — 단순히 sandbox UI 분리
+- 실 구독 상태 확인 경로:
+  1. 우리 앱의 보호자 설정 카드 (가장 빠름)
+  2. `AppStoreServerAPIClient.get_all_subscription_statuses(transactionId)` API 직접 조회 (정확한 expiresDate / autoRenewStatus / status 확인)
+
+**클라이언트 카드 분기 (PRD-FrontEnd §9.7 참조)**
+
+- `isPremium = plan == 'yearly' && isActive` — plan + isActive 둘 다 확인
+- `isExpired = plan == 'expired' || (plan == 'yearly' && !isActive)` — RTDN 누락 시 시간 안전망 자동 트리거
+- 이중 확인으로 RTDN 누락·지연 케이스에도 만료 카드 자동 전환 보장
+
+**카드 상태 전환 시각화**
+
+```
+[가입 직후]
+   회색 "무료 체험 중" (plan='free_trial', is_active=true)
+   [구독하기] + [구독 복원]
+        ↓
+   [구독하기] → 결제 완료 → SUBSCRIBED/PURCHASED RTDN
+        ↓
+[활성 구독]
+   인디고 "프리미엄 구독 중" (plan='yearly', is_active=true)
+   [구독 관리] 버튼만
+        ↓
+   ┌─ 자동 갱신 (1년마다) ─→ "프리미엄 구독 중" 유지
+   ├─ 자동 갱신 OFF + 기간 종료 ─→ EXPIRED RTDN
+   ├─ 환불/취소 ─→ REVOKE/REVOKED RTDN
+   └─ RTDN 누락 + expires_at < now ─→ is_active=false (시간 안전망)
+        ↓
+[만료]
+   주황 "구독 만료" (plan='expired' OR plan='yearly' + is_active=false)
+   [구독하기] 재표시
+```
+
+**핵심 invariant — 한 줄 정리**
+
+> 우리 서버는 Apple/Google에 한 번도 가지 않는다. RTDN으로 받는다. 그리고 클라가 GET /subscription 호출하면 시간 비교 1회로 안전망까지 적용해 응답한다. 끝.
+
+
 ---
 
 
