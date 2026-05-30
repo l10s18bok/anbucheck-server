@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import asyncpg
@@ -107,12 +107,22 @@ async def get_subjects(db: asyncpg.Connection, guardian_user_id: int) -> dict:
             }
         )
 
-    # 보호자 구독 상태 조회
+    # 보호자 구독 상태 조회 — plan + expires_at 이중 체크로 RTDN 누락/지연 안전망 확보.
+    # 이 응답은 대상자 앱(safety_home_base_controller.dart)이 guardianConnected 표시에 사용하므로
+    # plan만 보고 active=true 잘못 반환하면 대상자가 "보호자 연결됨"으로 안심하지만 실제로는
+    # 알림 안 가는 production hole 발생.
     sub_row = await db.fetchrow(
-        "SELECT plan FROM subscriptions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT plan, expires_at FROM subscriptions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
         guardian_user_id,
     )
-    subscription_active = sub_row["plan"] in ("free_trial", "yearly") if sub_row else False
+    if sub_row:
+        subscription_active = (
+            sub_row["plan"] in ("free_trial", "yearly")
+            and sub_row["expires_at"] is not None
+            and sub_row["expires_at"] > datetime.now(timezone.utc)
+        )
+    else:
+        subscription_active = False
 
     return {
         "subjects": subjects,

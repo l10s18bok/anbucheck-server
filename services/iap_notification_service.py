@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 import asyncpg
 
 import config
+from services import push_service
 from services.iap_verify_service import (
     GOOGLE_ACTIVE_STATES,
     verify_apple_transaction,
@@ -170,6 +171,8 @@ async def _mark_expired_by_token(
     )
     affected = _parse_affected(rows)
     logger.info("Google RTDN 회수 완료 type=%s affected=%d", type_name, affected)
+    if affected > 0:
+        await _push_subscription_notice_to_guardian(db, purchase_token, "android", "expired")
     return {"status": "ok", "kind": "revoked", "type": type_name, "affected": affected}
 
 
@@ -241,8 +244,13 @@ async def handle_apple_notification(db: asyncpg.Connection, decoded: dict) -> di
     if notification_type in _APPLE_ACTIVATE_TYPES:
         return await _apple_activate(db, str(original_tx_id), notification_type)
 
-    # DID_FAIL_TO_RENEW: subtype에 따라 grace period 진입/외부. graceful 처리 — Apple이
-    # 결국 EXPIRED 또는 DID_RENEW로 후속 알림을 보내므로 여기서는 무시.
+    # DID_FAIL_TO_RENEW: 결제 재시도 실패. Apple이 grace period에 진입한 경우
+    # signedRenewalInfo.gracePeriodExpiresDate가 채워져 있으므로 그 값으로 expires_at을
+    # 연장해 보호자 entitlement(알림 게이트)를 유지. Grace 없으면 noop — Apple이
+    # 후속 EXPIRED/DID_RENEW를 보낼 때까지 기다림.
+    if notification_type == "DID_FAIL_TO_RENEW":
+        return await _apple_grace_period(db, str(original_tx_id), data, notification_type)
+
     logger.info("Apple S2S V2 type=%s — 처리 대상 아님, 무시", notification_type)
     return {"status": "ok", "kind": "noop", "type": notification_type}
 
@@ -281,7 +289,103 @@ async def _apple_activate(db: asyncpg.Connection, original_tx_id: str, type_name
 
 
 async def _apple_revoke(db: asyncpg.Connection, original_tx_id: str, type_name: str) -> dict:
+    """Apple 회수 RTDN — verify_apple_transaction 재조회 후 현재 상태로 판정.
+
+    out-of-order RTDN 방어: 지연된 EXPIRED/REVOKE가 DID_RENEW 뒤에 도착하면
+    재조회 결과가 active(expires_at > now)일 수 있다. 그 경우 stale 알림으로
+    판정해 회수 스킵 + expires_at만 최신값으로 동기화. Google 회수 경로(§4.22.1)와
+    동일한 안전망.
+
+    재조회 실패 시 안전한 fallback으로 기존 동작(즉시 expired) 유지.
+    """
+    try:
+        info = await verify_apple_transaction(original_tx_id)
+    except Exception as e:
+        logger.warning(
+            "Apple S2S V2 회수 재조회 실패 type=%s err=%s — fallback to immediate expired",
+            type_name, e,
+        )
+        return await _mark_expired_by_ios_tx(db, original_tx_id, type_name)
+
+    expires_at_dt: datetime = info["expires_at"]
+    now = datetime.now(timezone.utc)
+
+    if expires_at_dt > now:
+        # 재조회 결과 active → 회수 RTDN이 stale (out-of-order). 활성 유지하고
+        # expires_at만 최신값으로 동기화.
+        rows = await db.execute(
+            """UPDATE subscriptions
+               SET plan = 'yearly', expires_at = $1, updated_at = NOW()
+               WHERE receipt_data = $2 AND platform = 'ios'""",
+            expires_at_dt, original_tx_id,
+        )
+        affected = _parse_affected(rows)
+        logger.info(
+            "Apple S2S V2 회수 스킵 — 재조회 결과 여전히 active type=%s affected=%d expires=%s (out-of-order RTDN 추정)",
+            type_name, affected, expires_at_dt.isoformat(),
+        )
+        return {"status": "ok", "kind": "skipped_active", "type": type_name, "affected": affected}
+
     return await _mark_expired_by_ios_tx(db, original_tx_id, type_name)
+
+
+async def _apple_grace_period(
+    db: asyncpg.Connection, original_tx_id: str, data: dict, type_name: str
+) -> dict:
+    """Apple DID_FAIL_TO_RENEW — Grace Period 처리.
+
+    Apple은 카드 한도초과·만료 등으로 결제 재시도 중인 동안 grace period를 부여하며,
+    이 기간엔 사용자를 여전히 구독자로 간주한다. signedRenewalInfo의
+    gracePeriodExpiresDate가 채워져 있으면 그 값으로 우리 DB의 expires_at을 연장해
+    is_active=true 유지 → 알림 게이트(`alert_service.py:310-311`,
+    `heartbeat_service.py:55-56`)가 자연스럽게 통과 → 보호자 알림 끊김 방지.
+
+    Grace 미부여 또는 signedRenewalInfo 누락 시 noop (Apple이 결국 EXPIRED 또는
+    DID_RENEW로 후속 알림 보냄).
+    """
+    import jwt as _jwt
+    signed_renewal_jws = data.get("signedRenewalInfo")
+    if not signed_renewal_jws:
+        logger.info("Apple S2S V2 DID_FAIL_TO_RENEW signedRenewalInfo 누락 — noop")
+        return {"status": "ok", "kind": "noop_no_renewal", "type": type_name}
+
+    renewal = _jwt.decode(signed_renewal_jws, options={"verify_signature": False})
+    grace_ms = renewal.get("gracePeriodExpiresDate")
+    if not grace_ms:
+        logger.info("Apple S2S V2 DID_FAIL_TO_RENEW gracePeriodExpiresDate 없음 — Grace 미부여, noop")
+        return {"status": "ok", "kind": "noop_no_grace", "type": type_name}
+
+    grace_dt = datetime.fromtimestamp(grace_ms / 1000, tz=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if grace_dt <= now:
+        logger.info(
+            "Apple S2S V2 DID_FAIL_TO_RENEW gracePeriodExpiresDate 이미 만료 grace=%s — expired 처리",
+            grace_dt.isoformat(),
+        )
+        return await _mark_expired_by_ios_tx(db, original_tx_id, type_name)
+
+    # 기존 expires_at < grace_dt일 때만 갱신 (이미 더 미래 값이면 보존)
+    rows = await db.execute(
+        """UPDATE subscriptions
+           SET plan = 'yearly', expires_at = $1, updated_at = NOW()
+           WHERE receipt_data = $2 AND platform = 'ios'
+             AND expires_at < $1""",
+        grace_dt, original_tx_id,
+    )
+    affected = _parse_affected(rows)
+    logger.info(
+        "Apple S2S V2 Grace Period 진입 type=%s affected=%d grace_expires=%s",
+        type_name, affected, grace_dt.isoformat(),
+    )
+    if affected > 0:
+        await _push_subscription_notice_to_guardian(db, original_tx_id, "ios", "grace_period")
+    return {
+        "status": "ok",
+        "kind": "grace_period",
+        "type": type_name,
+        "affected": affected,
+        "grace_expires_at": grace_dt.isoformat(),
+    }
 
 
 async def _mark_expired_by_ios_tx(
@@ -296,12 +400,64 @@ async def _mark_expired_by_ios_tx(
     )
     affected = _parse_affected(rows)
     logger.info("Apple S2S V2 회수 완료 type=%s affected=%d", type_name, affected)
+    if affected > 0:
+        await _push_subscription_notice_to_guardian(db, original_tx_id, "ios", "expired")
     return {"status": "ok", "kind": "revoked", "type": type_name, "affected": affected}
 
 
 # ─────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────
+
+async def _push_subscription_notice_to_guardian(
+    db: asyncpg.Connection,
+    receipt_data: str,
+    platform: str,
+    notice_type: str,
+) -> None:
+    """구독 상태 변경(만료/grace period 진입) 알림을 보호자 본인에게 FCM 발송.
+
+    receipt_data + platform으로 subscriptions → users → devices 조인해서 보호자
+    fcm_token + locale 조회. 보호자가 여러 device 등록 시 가장 최근 사용 1개에 발송
+    (alert_service.py:303-316과 동일 패턴).
+
+    발송 실패 시 RTDN 처리에 영향 주지 않도록 graceful try/except.
+    notice_type: "expired" (EXPIRED/REVOKE) 또는 "grace_period" (DID_FAIL_TO_RENEW).
+    """
+    try:
+        row = await db.fetchrow(
+            """SELECT d.fcm_token, d.locale
+               FROM subscriptions s
+               JOIN devices d ON d.user_id = s.user_id
+               WHERE s.receipt_data = $1 AND s.platform = $2
+                 AND d.fcm_token IS NOT NULL AND d.fcm_token != ''
+               ORDER BY d.updated_at DESC LIMIT 1""",
+            receipt_data, platform,
+        )
+        if not row:
+            logger.info(
+                "구독 알림 발송 스킵 — fcm_token 미발견 platform=%s notice=%s",
+                platform, notice_type,
+            )
+            return
+
+        fcm_token = row["fcm_token"]
+        locale = row["locale"] or "ko_KR"
+
+        if notice_type == "expired":
+            await push_service.push_subscription_expired(fcm_token, locale=locale)
+        elif notice_type == "grace_period":
+            await push_service.push_subscription_grace_period(fcm_token, locale=locale)
+        else:
+            logger.warning("구독 알림 알 수 없는 notice_type=%s", notice_type)
+            return
+
+        logger.info("구독 알림 발송 완료 platform=%s notice=%s locale=%s",
+                    platform, notice_type, locale)
+    except Exception as e:
+        logger.warning("구독 알림 발송 실패 platform=%s notice=%s err=%s",
+                       platform, notice_type, e)
+
 
 def _parse_affected(execute_result: str) -> int:
     """asyncpg.execute는 \"UPDATE N\" / \"INSERT 0 N\" 같은 status 문자열을 반환."""

@@ -270,6 +270,20 @@ async def push_subscription_expired(fcm_token: str, locale: str = "ko_KR") -> bo
     )
 
 
+async def push_subscription_grace_period(fcm_token: str, locale: str = "ko_KR") -> bool:
+    """Apple DID_FAIL_TO_RENEW(grace period 진입) 시점 보호자 안내.
+
+    카드 한도초과·만료 등으로 결제 재시도 중인 동안 곧 안부 알림이 끊길 수 있음을
+    보호자에게 알린다. iap_notification_service._apple_grace_period에서 호출.
+    """
+    return await send_push(
+        fcm_token,
+        title=get_message(locale, "push_subscription_grace_period_title"),
+        body=get_message(locale, "push_subscription_grace_period_body"),
+        data={"type": "subscription_grace_period"},
+    )
+
+
 async def push_alert_cleared(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,
