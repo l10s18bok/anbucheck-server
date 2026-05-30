@@ -239,7 +239,7 @@ class VerifyGooglePurchaseTest(unittest.IsolatedAsyncioTestCase):
 # ─────────────────────────────────────────
 
 class FakeDB:
-    """asyncpg.Connection 흉내 — fetchrow/execute만 충실히 캡처."""
+    """asyncpg.Connection 흉내 — fetchrow/execute/transaction 캡처."""
 
     def __init__(self, existing_row=None):
         self._existing = existing_row
@@ -250,6 +250,17 @@ class FakeDB:
 
     async def execute(self, query, *args):
         self.executed.append((query, args))
+
+    def transaction(self):
+        # asyncpg conn.transaction()의 async 컨텍스트 매니저 흉내 (no-op).
+        class _Tx:
+            async def __aenter__(self_inner):
+                return None
+
+            async def __aexit__(self_inner, *exc):
+                return False
+
+        return _Tx()
 
 
 class VerifySubscriptionTest(unittest.IsolatedAsyncioTestCase):
@@ -276,9 +287,17 @@ class VerifySubscriptionTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["plan"], "yearly")
         self.assertTrue(result["is_active"])
-        self.assertEqual(len(db.executed), 1)
-        # INSERT 인자 검증: (expires_at, receipt_data, platform, ...) 순서
-        insert_args = db.executed[0][1]
+        # 단일 활성 entitlement 불변식 — 회수 UPDATE(다른 user에 바인딩된 동일 영수증
+        # 제거) + 신규 INSERT 두 건이 실행된다.
+        self.assertEqual(len(db.executed), 2)
+        # 1번째: 회수 UPDATE — normalized_receipt + 호출자 user_id로 다른 바인딩 회수
+        revoke_query, revoke_args = db.executed[0]
+        self.assertIn("receipt_data = $1 AND user_id != $2", revoke_query)
+        self.assertIn("expired", revoke_query)
+        self.assertIn("orig_999", revoke_args)
+        self.assertIn(42, revoke_args)
+        # 2번째: INSERT — (expires_at, receipt_data, platform, ...) 순서
+        insert_args = db.executed[1][1]
         self.assertIn("orig_999", insert_args)  # receipt_data 컬럼에 originalTransactionId 저장 확인
         self.assertIn("ios", insert_args)
         self.assertIn(future_dt, insert_args)

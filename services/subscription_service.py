@@ -95,22 +95,40 @@ async def _verify_and_persist(
             detail="구독이 이미 만료되었습니다",
         )
 
-    existing = await db.fetchrow(
-        "SELECT id FROM subscriptions WHERE user_id = $1", user_id
-    )
-    if existing:
+    # 단일 활성 entitlement 불변식 — 같은 영수증(iOS originalTransactionId /
+    # Android purchaseToken)이 다른 user_id에 이미 바인딩돼 있으면 그 바인딩을 회수한 뒤
+    # 현재 호출자에게 이전한다.
+    #   · 회수하지 않으면: A가 B의 purchaseToken을 /verify로 제출 → 영수증 정당성만
+    #     검증할 뿐 "누가 샀는지"는 모르므로 A·B 둘 다 yearly 활성화되는 구독 도용/공유 성립.
+    #   · 단순 거부하지 않는 이유: 기기 변경(새 device_id ⇒ 새 user_id) 후 정상 복원도
+    #     "다른 user_id로의 이전"이라 막으면 정상 사용자가 깨진다. 스토어 의미론(구독 1개 =
+    #     동시 1계정 활성)에 맞춰 last-writer-wins로 이전한다.
+    #   · 이전 row의 receipt_data를 NULL로 비워 RTDN(receipt_data 기준 매핑)이 두 row를
+    #     동시에 갱신하는 모호성도 함께 제거한다.
+    # 회수+바인딩을 하나의 트랜잭션으로 묶어 원자적으로 처리한다.
+    async with db.transaction():
         await db.execute(
-            """UPDATE subscriptions SET plan = 'yearly', expires_at = $1,
-               receipt_data = $2, platform = $3, updated_at = NOW()
-               WHERE user_id = $4""",
-            expires_at_dt, normalized_receipt, platform, user_id,
+            """UPDATE subscriptions SET plan = 'expired', receipt_data = NULL, updated_at = NOW()
+               WHERE receipt_data = $1 AND user_id != $2""",
+            normalized_receipt, user_id,
         )
-    else:
-        await db.execute(
-            """INSERT INTO subscriptions (user_id, plan, expires_at, receipt_data, platform)
-               VALUES ($1, 'yearly', $2, $3, $4)""",
-            user_id, expires_at_dt, normalized_receipt, platform,
+
+        existing = await db.fetchrow(
+            "SELECT id FROM subscriptions WHERE user_id = $1", user_id
         )
+        if existing:
+            await db.execute(
+                """UPDATE subscriptions SET plan = 'yearly', expires_at = $1,
+                   receipt_data = $2, platform = $3, updated_at = NOW()
+                   WHERE user_id = $4""",
+                expires_at_dt, normalized_receipt, platform, user_id,
+            )
+        else:
+            await db.execute(
+                """INSERT INTO subscriptions (user_id, plan, expires_at, receipt_data, platform)
+                   VALUES ($1, 'yearly', $2, $3, $4)""",
+                user_id, expires_at_dt, normalized_receipt, platform,
+            )
 
     return {
         "plan": "yearly",

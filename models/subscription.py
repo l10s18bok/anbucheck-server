@@ -1,4 +1,5 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Literal
 
 
 class SubscriptionOut(BaseModel):
@@ -10,11 +11,11 @@ class SubscriptionOut(BaseModel):
 
 
 class SubscriptionVerifyIn(BaseModel):
-    platform: str  # android | ios
-    product_id: str
+    platform: Literal["android", "ios"]
+    product_id: str = Field(..., min_length=1, max_length=256)
     # iOS: PurchaseDetails.purchaseID (transactionId 문자열)
     # Android: PurchaseDetails.verificationData.serverVerificationData (purchaseToken)
-    receipt: str
+    receipt: str = Field(..., min_length=1, max_length=8192)
 
 
 class SubscriptionVerifyOut(BaseModel):

@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Literal, Optional
 
 
 class AppVersionCheckOut(BaseModel):
@@ -12,10 +12,10 @@ class AppVersionCheckOut(BaseModel):
 
 
 class AppVersionUpdateIn(BaseModel):
-    platform: str
-    latest_version: str
-    min_version: str
-    store_url: Optional[str] = None
+    platform: Literal["android", "ios"]
+    latest_version: str = Field(..., min_length=1, max_length=32)
+    min_version: str = Field(..., min_length=1, max_length=32)
+    store_url: Optional[str] = Field(default=None, max_length=512)
 
 
 class AppVersionOut(BaseModel):

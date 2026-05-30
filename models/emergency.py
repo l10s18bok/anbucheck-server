@@ -11,7 +11,7 @@ class LocationPayload(BaseModel):
 
 
 class EmergencyIn(BaseModel):
-    device_id: str
+    device_id: str = Field(..., min_length=1, max_length=256)
     location: LocationPayload | None = None
 
 

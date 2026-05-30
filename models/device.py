@@ -1,14 +1,14 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class FcmTokenIn(BaseModel):
-    fcm_token: str
-    locale: str | None = None  # 기기 로케일 (e.g. 'ko_KR', 'en_US')
+    fcm_token: str = Field(..., max_length=4096)
+    locale: str | None = Field(default=None, max_length=32)  # 기기 로케일
 
 
 class HeartbeatScheduleIn(BaseModel):
-    heartbeat_hour: int
-    heartbeat_minute: int
+    heartbeat_hour: int = Field(..., ge=0, le=23)
+    heartbeat_minute: int = Field(..., ge=0, le=59)
 
 
 class HeartbeatScheduleOut(BaseModel):

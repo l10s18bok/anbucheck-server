@@ -1,18 +1,18 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Literal, Optional
 
 
 class DeviceIn(BaseModel):
-    device_id: str
-    fcm_token: Optional[str] = None
-    platform: str  # android | ios
-    os_version: Optional[str] = None
-    timezone: Optional[str] = 'Asia/Seoul'  # IANA timezone (e.g. 'Asia/Seoul', 'America/New_York')
-    locale: Optional[str] = 'ko_KR'  # 기기 로케일 (e.g. 'ko_KR', 'en_US', 'ja_JP')
+    device_id: str = Field(..., min_length=1, max_length=256)
+    fcm_token: Optional[str] = Field(default=None, max_length=4096)
+    platform: Literal["android", "ios"]
+    os_version: Optional[str] = Field(default=None, max_length=128)
+    timezone: Optional[str] = Field(default="Asia/Seoul", max_length=64)  # IANA timezone
+    locale: Optional[str] = Field(default="ko_KR", max_length=32)  # 기기 로케일
 
 
 class UserRegisterIn(BaseModel):
-    role: str  # subject | guardian
+    role: Literal["subject", "guardian"]
     device: DeviceIn
 
 

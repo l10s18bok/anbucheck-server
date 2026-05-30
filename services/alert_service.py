@@ -61,8 +61,13 @@ def is_in_dnd(settings: dict) -> bool:
 
     now_local   = datetime.now(tz)
     now_minutes = now_local.hour * 60 + now_local.minute
-    start_h, start_m = map(int, dnd_start.split(":"))
-    end_h,   end_m   = map(int, dnd_end.split(":"))
+    # 모델에서 "HH:MM" 형식을 강제하지만, 과거에 저장된 비정상 값이 남아 있어도
+    # 알림 발송 경로가 500으로 터지지 않게 방어적으로 파싱한다(파싱 실패 = DND 미적용).
+    try:
+        start_h, start_m = map(int, dnd_start.split(":"))
+        end_h,   end_m   = map(int, dnd_end.split(":"))
+    except (ValueError, AttributeError):
+        return False
     start_minutes = start_h * 60 + start_m
     end_minutes   = end_h   * 60 + end_m
 

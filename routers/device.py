@@ -128,8 +128,8 @@ async def update_heartbeat_schedule(
 
     await db.execute(
         """UPDATE devices SET heartbeat_hour = $1, heartbeat_minute = $2,
-           updated_at = NOW() WHERE device_id = $3""",
-        h, m, device_id,
+           updated_at = NOW() WHERE device_id = $3 AND user_id = $4""",
+        h, m, device_id, user["user_id"],
     )
 
     return HeartbeatScheduleOut(

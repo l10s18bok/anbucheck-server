@@ -36,17 +36,28 @@ async def lifespan(app: FastAPI):
     logger.info("서버 종료")
 
 
+# prod(ENV=production)에서는 스키마 노출을 줄이기 위해 /docs·/redoc·openapi.json 비활성화.
+# 모든 엔드포인트가 토큰 보호 + 무 PII라 위험은 낮지만, 불필요한 공개 표면을 줄인다.
+import os as _os
+_is_prod = _os.environ.get("ENV", "").lower() == "production"
+
 app = FastAPI(
     title="Anbu (안부) API",
     description="안부(Anbu) 앱 서버 API",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None if _is_prod else "/docs",
+    redoc_url=None if _is_prod else "/redoc",
+    openapi_url=None if _is_prod else "/openapi.json",
 )
 
+# 네이티브 앱(Bearer 토큰) 전용 API라 쿠키를 쓰지 않으므로 credentials를 끈다.
+# allow_credentials=True + allow_origins=["*"] 조합은 브라우저가 무시하는 무의미한
+# 설정이기도 하다. 모바일 클라이언트는 CORS 대상이 아니므로 origin은 그대로 둔다.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
