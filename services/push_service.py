@@ -167,6 +167,24 @@ async def _invalidate_fcm_token(fcm_token: str) -> None:
 
 # ── locale 기반 경고 Push 메시지 헬퍼 ──
 
+async def push_subject_safety_net(fcm_token: str, locale: str = "ko_KR") -> bool:
+    """대상자 본인에게 보내는 안부유도 푸시 (Android 한정).
+
+    heartbeat 미수신 체크 시점(예약시각 +2h)에 발송한다. 구독·보호자 유무와 무관
+    (대상자 본인 안부 신호 유도이므로 보호자 경고 게이팅과 별개).
+    클라는 data.type 'subject_safety_net'을 받아 safety_home으로 이동 후 미전송
+    heartbeat 자동 재전송 + 안내 다이얼로그를 처리한다.
+    iOS는 클라 정시 로컬알림(gs_deadman)이 PRIMARY 트리거이므로 호출부에서 제외한다.
+    """
+    return await send_push(
+        fcm_token,
+        title=get_message(locale, "push_subject_safety_net_title"),
+        body=get_message(locale, "push_subject_safety_net_body"),
+        data={"type": "subject_safety_net"},
+        sound="default",
+    )
+
+
 async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR") -> bool:
     return await send_push(
         fcm_token,

@@ -6,6 +6,8 @@ locale → message_key → 번역 텍스트
 
 MESSAGES: dict[str, dict[str, str]] = {
     "ko_KR": {
+        "push_subject_safety_net_title": "💗 안부 확인이 필요합니다",
+        "push_subject_safety_net_body": "이 메시지 알림을 한 번 터치해 주세요.",
         # Push 알림 제목
         "push_battery_low_title": "🔋 폰 배터리 부족",
         "push_battery_dead_title": "🔋 배터리 방전 추정",
@@ -43,6 +45,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "보호자 중 한 명이 대상자의 안전을 직접 확인했습니다.",
     },
     "en_US": {
+        "push_subject_safety_net_title": "💗 Wellness check needed",
+        "push_subject_safety_net_body": "Please tap this notification.",
         "push_battery_low_title": "🔋 Low Battery",
         "push_battery_dead_title": "🔋 Battery Likely Dead",
         "push_caution_title": "⚠ Caution",
@@ -77,6 +81,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "One of the guardians has personally confirmed the subject's safety.",
     },
     "ja_JP": {
+        "push_subject_safety_net_title": "💗 安否確認が必要です",
+        "push_subject_safety_net_body": "この通知をタップしてください。",
         "push_battery_low_title": "🔋 バッテリー残量低下",
         "push_battery_dead_title": "🔋 バッテリー切れの可能性",
         "push_caution_title": "⚠ 注意",
@@ -111,6 +117,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "保護者の一人が対象者の安全を直接確認しました。",
     },
     "zh_CN": {
+        "push_subject_safety_net_title": "💗 需要确认安否",
+        "push_subject_safety_net_body": "请点击此通知。",
         "push_battery_low_title": "🔋 手机电量不足",
         "push_battery_dead_title": "🔋 电池可能已耗尽",
         "push_caution_title": "⚠ 注意",
@@ -145,6 +153,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "一位守护者已亲自确认了被守护人的安全。",
     },
     "zh_TW": {
+        "push_subject_safety_net_title": "💗 需要確認安否",
+        "push_subject_safety_net_body": "請點擊此通知。",
         "push_battery_low_title": "🔋 手機電量不足",
         "push_battery_dead_title": "🔋 電池可能已耗盡",
         "push_caution_title": "⚠ 注意",
@@ -179,6 +189,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "一位守護者已親自確認了被守護者的安全。",
     },
     "de_DE": {
+        "push_subject_safety_net_title": "💗 Wohlbefindens-Prüfung erforderlich",
+        "push_subject_safety_net_body": "Bitte tippen Sie auf diese Benachrichtigung.",
         "push_battery_low_title": "🔋 Akku fast leer",
         "push_battery_dead_title": "🔋 Akku vermutlich leer",
         "push_caution_title": "⚠ Hinweis",
@@ -213,6 +225,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "Einer der Betreuer hat die Sicherheit persoenlich bestaetigt.",
     },
     "fr_FR": {
+        "push_subject_safety_net_title": "💗 Vérification de bien-être nécessaire",
+        "push_subject_safety_net_body": "Veuillez appuyer sur cette notification.",
         "push_battery_low_title": "🔋 Batterie faible",
         "push_battery_dead_title": "🔋 Batterie probablement epuisee",
         "push_caution_title": "⚠ Attention",
@@ -247,6 +261,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "Un des protecteurs a personnellement confirme la securite.",
     },
     "es_ES": {
+        "push_subject_safety_net_title": "💗 Verificación de bienestar necesaria",
+        "push_subject_safety_net_body": "Por favor, toque esta notificación.",
         "push_battery_low_title": "🔋 Bateria baja",
         "push_battery_dead_title": "🔋 Bateria probablemente agotada",
         "push_caution_title": "⚠ Atencion",
@@ -281,6 +297,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "Uno de los protectores ha confirmado personalmente la seguridad.",
     },
     "it_IT": {
+        "push_subject_safety_net_title": "💗 Verifica di benessere necessaria",
+        "push_subject_safety_net_body": "Per favore, tocca questa notifica.",
         "push_battery_low_title": "🔋 Batteria scarica",
         "push_battery_dead_title": "🔋 Batteria probabilmente esaurita",
         "push_caution_title": "⚠ Attenzione",
@@ -315,6 +333,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "Uno dei tutori ha confermato personalmente la sicurezza.",
     },
     "nl_NL": {
+        "push_subject_safety_net_title": "💗 Welzijnscontrole nodig",
+        "push_subject_safety_net_body": "Tik op deze melding.",
         "push_battery_low_title": "🔋 Batterij bijna leeg",
         "push_battery_dead_title": "🔋 Batterij waarschijnlijk leeg",
         "push_caution_title": "⚠ Let op",
@@ -349,6 +369,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "Een van de beschermers heeft de veiligheid persoonlijk bevestigd.",
     },
     "pt_BR": {
+        "push_subject_safety_net_title": "💗 Verificação de bem-estar necessária",
+        "push_subject_safety_net_body": "Por favor, toque nesta notificação.",
         "push_battery_low_title": "🔋 Bateria fraca",
         "push_battery_dead_title": "🔋 Bateria provavelmente esgotada",
         "push_caution_title": "⚠ Atencao",
@@ -383,6 +405,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "Um dos protetores confirmou pessoalmente a seguranca.",
     },
     "ru_RU": {
+        "push_subject_safety_net_title": "💗 Требуется проверка самочувствия",
+        "push_subject_safety_net_body": "Пожалуйста, нажмите на это уведомление.",
         "push_battery_low_title": "🔋 Низкий заряд батареи",
         "push_battery_dead_title": "🔋 Батарея, вероятно, разряжена",
         "push_caution_title": "⚠ Внимание",
@@ -417,6 +441,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "Один из опекунов лично подтвердил безопасность подопечного.",
     },
     "ar_SA": {
+        "push_subject_safety_net_title": "💗 يلزم التحقق من السلامة",
+        "push_subject_safety_net_body": "يرجى الضغط على هذا الإشعار.",
         "push_battery_low_title": "🔋 بطارية منخفضة",
         "push_battery_dead_title": "🔋 البطارية نفدت على الأرجح",
         "push_caution_title": "⚠ تنبيه",
@@ -451,6 +477,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "أحد الأوصياء تحقق شخصياً من سلامة الشخص المحمي.",
     },
     "tr_TR": {
+        "push_subject_safety_net_title": "💗 Sağlık kontrolü gerekli",
+        "push_subject_safety_net_body": "Lütfen bu bildirime dokunun.",
         "push_battery_low_title": "🔋 Dusuk pil",
         "push_battery_dead_title": "🔋 Pil muhtemelen bitmis",
         "push_caution_title": "⚠ Dikkat",
@@ -485,6 +513,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "Koruyuculardan biri guvenligini bizzat dogruladi.",
     },
     "pl_PL": {
+        "push_subject_safety_net_title": "💗 Wymagane sprawdzenie samopoczucia",
+        "push_subject_safety_net_body": "Proszę dotknąć tego powiadomienia.",
         "push_battery_low_title": "🔋 Niski poziom baterii",
         "push_battery_dead_title": "🔋 Bateria prawdopodobnie rozladowana",
         "push_caution_title": "⚠ Uwaga",
@@ -519,6 +549,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "Jeden z opiekunow osobiscie potwierdzil bezpieczenstwo.",
     },
     "vi_VN": {
+        "push_subject_safety_net_title": "💗 Cần kiểm tra sức khỏe",
+        "push_subject_safety_net_body": "Vui lòng chạm vào thông báo này.",
         "push_battery_low_title": "🔋 Pin yeu",
         "push_battery_dead_title": "🔋 Pin co the da het",
         "push_caution_title": "⚠ Luu y",
@@ -553,6 +585,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "Mot trong cac nguoi bao ve da truc tiep xac nhan su an toan.",
     },
     "th_TH": {
+        "push_subject_safety_net_title": "💗 ต้องตรวจสอบความเป็นอยู่",
+        "push_subject_safety_net_body": "กรุณาแตะที่การแจ้งเตือนนี้",
         "push_battery_low_title": "🔋 แบตเตอรี่ต่ำ",
         "push_battery_dead_title": "🔋 แบตเตอรี่อาจหมด",
         "push_caution_title": "⚠ ระวัง",
@@ -587,6 +621,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "ผู้ดูแลท่านหนึ่งได้ยืนยันความปลอดภัยด้วยตนเอง",
     },
     "sv_SE": {
+        "push_subject_safety_net_title": "💗 Välmåendekontroll behövs",
+        "push_subject_safety_net_body": "Vänligen tryck på denna avisering.",
         "push_battery_low_title": "🔋 Lagt batteri",
         "push_battery_dead_title": "🔋 Batteriet ar troligen slut",
         "push_caution_title": "⚠ Observera",
@@ -621,6 +657,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "En av vardnadshavarna har personligen bekraftat sakerheten.",
     },
     "hi_IN": {
+        "push_subject_safety_net_title": "💗 कुशलता जांच आवश्यक है",
+        "push_subject_safety_net_body": "कृपया इस सूचना पर टैप करें।",
         "push_battery_low_title": "🔋 कम बैटरी",
         "push_battery_dead_title": "🔋 बैटरी शायद खत्म हो गई",
         "push_caution_title": "⚠ सावधान",
@@ -655,6 +693,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_alert_cleared_body": "एक अभिभावक ने व्यक्तिगत रूप से सुरक्षा की पुष्टि की है।",
     },
     "id_ID": {
+        "push_subject_safety_net_title": "💗 Pemeriksaan kesejahteraan diperlukan",
+        "push_subject_safety_net_body": "Silakan ketuk notifikasi ini.",
         "push_battery_low_title": "🔋 Baterai lemah",
         "push_battery_dead_title": "🔋 Baterai kemungkinan habis",
         "push_caution_title": "⚠ Perhatian",

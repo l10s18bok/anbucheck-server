@@ -33,8 +33,6 @@ from services.heartbeat_service import _save_notification_event, _get_active_gua
 
 logger = logging.getLogger(__name__)
 
-KST = timezone(timedelta(hours=9))
-
 scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
 
 
@@ -63,25 +61,33 @@ def _singleton(lock_key: int):
 # ─────────────────────────────────────────────────────────────
 
 async def job_heartbeat_check() -> None:
-    now_kst = datetime.now(KST)
-    current_minutes = now_kst.hour * 60 + now_kst.minute
-
-    today_kst_start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_utc_start = today_kst_start.astimezone(timezone.utc)
-
+    # 미수신 판정은 기기 로컬 타임존(devices.timezone) 기준으로 수행한다 —
+    # "오늘 자정"과 "예약시각 +2h"를 모두 기기 로컬 시각으로 계산한 뒤 UTC instant로
+    # 환산해 now()와 비교한다. (과거 KST 벽시계 하드코딩은 비-KST 사용자에게
+    # 예약+2h를 (offset-9)시간 어긋나게 발화시켰다 — 자정 정리/걸음수 통계 등
+    # 다른 잡과 동일하게 devices.timezone을 존중하도록 정합화.)
+    #
+    # 안정성: zone 문자열을 그대로 `AT TIME ZONE`에 넣으면 불량 값 1건이 매분 전체
+    # 쿼리를 throw시켜 미수신 체크를 마비시킬 수 있다. pg_timezone_names에 LEFT JOIN해
+    # 유효하지 않은 zone은 'Asia/Seoul'로 폴백시켜 항상 유효 zone만 사용한다.
     from database import get_pool
     async with get_pool().acquire() as db:
         missed = await db.fetch(
             """SELECT u.id AS user_id, d.device_id, d.last_seen,
                       d.battery_level,
                       d.suspicious_count, d.platform,
-                      d.heartbeat_hour, d.heartbeat_minute
+                      d.heartbeat_hour, d.heartbeat_minute,
+                      d.fcm_token, d.locale
                FROM users u
                JOIN devices d ON u.id = d.user_id
+               LEFT JOIN pg_timezone_names z ON z.name = d.timezone
+               CROSS JOIN LATERAL (SELECT COALESCE(z.name, 'Asia/Seoul') AS tz) zz
                WHERE u.invite_code IS NOT NULL
-                 AND (d.heartbeat_hour * 60 + d.heartbeat_minute + 120) = $1
-                 AND d.last_seen < $2""",
-            current_minutes, today_utc_start,
+                 AND date_trunc('minute', now()) = date_trunc('minute',
+                       (date_trunc('day', now() AT TIME ZONE zz.tz)
+                          + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute + 120)
+                       ) AT TIME ZONE zz.tz)
+                 AND d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz)""",
         )
 
         for row in missed:
@@ -91,6 +97,16 @@ async def job_heartbeat_check() -> None:
 async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
     user_id = row["user_id"]
     battery_level = row["battery_level"] or 0
+
+    # 0. 대상자 본인 안부유도 푸시 (Android 한정, 구독·보호자 유무와 무관).
+    #    iOS는 클라의 정시 로컬알림(gs_deadman)이 PRIMARY 트리거이므로 서버 푸시 제외.
+    #    아래 보호자 gate(_get_active_guardians) **앞**에 두어, 보호자가 없거나 전원
+    #    구독 만료여도 대상자에겐 "앱을 열어 안부를 보내달라"는 푸시가 전달되게 한다.
+    #    스케줄러가 미수신일마다 하루 1회 발화하므로, 사용자가 무시하면 다음 날 같은
+    #    시각에 재발송되어 기존 일일 로컬 안전망 알림의 "무시 시 반복"을 그대로 대체한다.
+    if row.get("platform") == "android" and row.get("fcm_token"):
+        from services.push_service import push_subject_safety_net
+        await push_subject_safety_net(row["fcm_token"], row.get("locale") or "ko_KR")
 
     guardians = await _get_active_guardians(db, user_id)
     if not guardians:
