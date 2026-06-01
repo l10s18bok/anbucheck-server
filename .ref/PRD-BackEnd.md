@@ -1440,21 +1440,43 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 처리 흐름:
 1. 현재 시각이 heartbeat 시각 + 2시간에 해당하는 기기 중
    오늘 heartbeat를 수신하지 못한 대상자 조회
-   SELECT u.id, d.last_seen, d.battery_level,
-          d.heartbeat_hour, d.heartbeat_minute
+   ※ 판정은 **기기 로컬 타임존(devices.timezone) 기준**으로 수행한다 — "오늘 자정"과
+     "예약시각 +2h"를 모두 기기 로컬 시각으로 계산한 뒤 UTC instant로 환산해 now()와 비교.
+     (과거 datetime.now(KST) 하드코딩은 비-KST 사용자에게 예약+2h를 (offset-9)시간
+      어긋나게 발화시켰다. 자정 정리·걸음수 통계 등 다른 잡과 동일하게 devices.timezone 존중.)
+     불량 tz 1건이 매분 전체 쿼리를 throw시키지 않도록 pg_timezone_names에 LEFT JOIN해
+     유효하지 않은 zone은 'Asia/Seoul'로 폴백한다.
+   SELECT u.id, d.device_id, d.last_seen, d.battery_level,
+          d.suspicious_count, d.platform,
+          d.heartbeat_hour, d.heartbeat_minute,
+          d.fcm_token, d.locale          -- 대상자 본인 푸시용
    FROM users u
    JOIN devices d ON u.id = d.user_id
-   WHERE u.role = 'subject'
-     AND (d.heartbeat_hour * 60 + d.heartbeat_minute + 120) = :current_minutes_of_day
-     AND d.last_seen < $2  -- 오늘 KST 자정을 UTC로 변환한 값
+   LEFT JOIN pg_timezone_names z ON z.name = d.timezone
+   CROSS JOIN LATERAL (SELECT COALESCE(z.name, 'Asia/Seoul') AS tz) zz
+   WHERE u.invite_code IS NOT NULL      -- 활성 대상자/G+S (subject 역할 보유)
+     AND date_trunc('minute', now()) = date_trunc('minute',
+           (date_trunc('day', now() AT TIME ZONE zz.tz)
+              + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute + 120)
+           ) AT TIME ZONE zz.tz)
+     AND d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz)
 
-   ※ 기본: heartbeat_hour=18, heartbeat_minute=0 → 20:00(1200분)에 체크
+   ※ 기본: heartbeat_hour=18, heartbeat_minute=0 → 기기 로컬 20:00에 체크
 
-2. 보호자 구독 확인:
-   a. 보호자 구독 만료 → 알림 미발송 (heartbeat는 계속 수신)
+2. 대상자 본인 안부유도 푸시 (Android 한정 — 구독·보호자 유무와 무관):
+   - row.platform == 'android' 이고 fcm_token이 있으면 push_subject_safety_net(fcm_token, locale)
+     발송 (data.type = 'subject_safety_net', i18n push_subject_safety_net_title/body).
+   - 아래 보호자 게이팅(3단계)보다 **먼저** 실행해, 보호자가 없거나 전원 구독 만료여도
+     대상자에겐 "앱을 열어 안부를 보내달라"는 푸시가 전달되게 한다.
+   - 미수신일마다 1회 발화 → 무시 시 매일 반복(클라의 버그 있던 Android 일일 로컬 안전망
+     알림을 대체. iOS 대상자는 클라 정시 로컬알림 gs_deadman이 PRIMARY라 서버 푸시 제외).
+   - 클라는 탭 시 safety_home으로 이동 후 미전송 heartbeat 자동 재전송(자세히는 FrontEnd §2.5.1).
+
+3. 보호자 구독 확인:
+   a. 보호자 구독 만료 → 보호자 알림 미발송 (heartbeat는 계속 수신, 대상자 푸시는 위에서 이미 발송)
    b. 보호자 구독 활성 → 등급 판정 진행
 
-3. 등급 판정 (누적 미수신 횟수 기반):
+4. 등급 판정 (누적 미수신 횟수 기반):
    a. battery_level < 20%
       → 정보 등급 1회 발송 후 종료 (이후 상향 없음, 소리 없음)
       → heartbeat 수신 시 자동 해소
@@ -1471,17 +1493,17 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
    e. urgent 활성 (긴급 지속)
       → 긴급 반복: days_inactive 증가, push_count 증가, Push 발송은 최대 5회까지
 
-4. DND(방해금지) 설정 반영:
+5. DND(방해금지) 설정 반영:
    - 보호자별 DND 시간대 설정 가능 (기본 OFF)
    - 긴급 등급은 DND 무관하게 항상 발송
 
-5. 경고 반복 정책:
+6. 경고 반복 정책:
    - 정보 등급: 1회 발송, 이후 상향 없음
    - 주의 등급: 1회 발송
    - 경고 등급: 1~2회 다음날 재발송 → 3회 이상 긴급 상향
    - 긴급 등급: 보호자 확인까지 매일 반복 (종료 없음)
 
-6. 보호자 Push 병렬 발송 (alert_service.send_alert_to_guardians):
+7. 보호자 Push 병렬 발송 (alert_service.send_alert_to_guardians):
    - 경고 등급 판정 후 연결된 보호자 전체에 Push 발송 시 `asyncio.gather + asyncio.to_thread` 패턴
    - FCM `send()`는 동기 블로킹 호출이라 `to_thread`로 풀어 이벤트 루프 차단 회피
    - 각 보호자의 FCM 발송은 독립적이므로 완전 병렬화 가능
