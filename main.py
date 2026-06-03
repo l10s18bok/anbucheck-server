@@ -18,6 +18,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 에러 알림에 "직전 로그 맥락"을 붙이기 위한 최근 로그 링버퍼를 루트 로거에 부착.
+# 평소 부담은 로그 1줄을 고정 크기 deque에 덮어쓰는 것뿐(상시 외부 전송 없음).
+from services.notify import install_log_buffer
+install_log_buffer(capacity=50, level=logging.INFO)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

@@ -8,10 +8,14 @@
   잡이 지속 실패할 때 Discord 채널이 도배되는 것을 막는다.
   (throttle은 프로세스 단위라 Railway 레플리카가 여러 개면 API 500이 레플리카당 1회씩
    알림될 수 있다. 스케줄러 잡은 advisory lock으로 단일 실행되므로 영향 없음.)
+- 에러 직전 맥락 제공: 최근 로그 N줄을 고정 크기 인메모리 링버퍼에 순환 보관하다가,
+  에러 알림 시 함께 첨부한다. 평소 부담은 "로그 1줄을 deque에 덮어쓰기"뿐이고
+  네트워크 전송은 에러 순간에만 일어난다(외부 로그 저장소 상시 전송과 다름).
 """
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import os
@@ -28,6 +32,62 @@ _last_sent: dict[str, float] = {}
 
 # Discord content 길이 제한은 2000자 — 여유를 두고 스택트레이스를 자른다.
 _MAX_TRACE = 1500
+# 에러 알림에 첨부할 최근 로그 텍스트 최대 길이(Discord embed 여유분)
+_MAX_RECENT = 1500
+
+
+class _RingBufferHandler(logging.Handler):
+    """최근 로그 N줄을 고정 크기 deque에 순환 보관하는 경량 핸들러.
+
+    emit은 포맷된 한 줄 문자열을 deque(maxlen)에 append할 뿐이라 O(1)·고정 메모리다.
+    실제 네트워크 전송은 하지 않으므로 상시 부담이 사실상 없다.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        super().__init__()
+        self._buf: collections.deque[str] = collections.deque(maxlen=capacity)
+        self.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = self.format(record)
+        except Exception:  # noqa: BLE001 — 로깅 핸들러는 절대 throw하지 않는다
+            return
+        # deque.append는 GIL 하에서 원자적. 스냅샷과의 경쟁은 핸들러 lock으로 직렬화.
+        self.acquire()
+        try:
+            self._buf.append(line)
+        finally:
+            self.release()
+
+    def text(self) -> str:
+        self.acquire()
+        try:
+            lines = list(self._buf)
+        finally:
+            self.release()
+        joined = "\n".join(lines)
+        return joined[-_MAX_RECENT:]
+
+
+_ring_handler: _RingBufferHandler | None = None
+
+
+def install_log_buffer(capacity: int = 50, level: int = logging.INFO) -> None:
+    """루트 로거에 링버퍼 핸들러를 1회 부착한다(서버 시작 시 호출). 멱등."""
+    global _ring_handler
+    if _ring_handler is not None:
+        return
+    _ring_handler = _RingBufferHandler(capacity)
+    _ring_handler.setLevel(level)
+    logging.getLogger().addHandler(_ring_handler)
+
+
+def _recent_logs() -> str:
+    return _ring_handler.text() if _ring_handler is not None else ""
 
 
 def _webhook_url() -> str:
@@ -62,9 +122,15 @@ def _build_payload(context: str, type_name: str | None, message: str | None, tb_
         msg = (message or "").strip()
         content += f"\n**예외:** `{type_name}: {msg}`"
     payload: dict = {"content": content}
+    embeds: list[dict] = []
     if tb_text:
         trace = tb_text.strip()[-_MAX_TRACE:]
-        payload["embeds"] = [{"description": f"```\n{trace}\n```", "color": 15158332}]
+        embeds.append({"title": "스택트레이스", "description": f"```\n{trace}\n```", "color": 15158332})
+    recent = _recent_logs()
+    if recent:
+        embeds.append({"title": "에러 직전 로그", "description": f"```\n{recent}\n```", "color": 9807270})
+    if embeds:
+        payload["embeds"] = embeds
     return payload
 
 
