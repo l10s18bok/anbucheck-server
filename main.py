@@ -2,8 +2,9 @@ import logging
 from contextlib import asynccontextmanager
 
 import config  # .env 로드 (FIREBASE_CREDENTIALS 등)
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from database import init_pool, close_pool
 from services.scheduler import setup_scheduler
@@ -73,6 +74,19 @@ app.include_router(guardian_notification_settings.router)
 app.include_router(notifications.router)
 app.include_router(emergency.router)
 app.include_router(iap_notification.router)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    """API 처리 중 미처리 예외(500)를 Discord로 통보한 뒤 표준 500 응답을 돌려준다.
+
+    HTTPException(401/404 등 의도된 4xx)과 422 검증 오류는 FastAPI가 별도 핸들러로
+    처리하므로 여기로 오지 않는다 — 진짜 서버 오류만 잡힌다.
+    """
+    from services.notify import notify_error
+    await notify_error(f"{request.method} {request.url.path}", exc)
+    logger.exception("미처리 예외: %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 
 @app.get("/health")

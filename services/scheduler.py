@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.events import EVENT_JOB_ERROR
 
 import asyncpg
 
@@ -346,7 +347,28 @@ async def job_cleanup_old_logs() -> None:
 # 스케줄러 등록
 # ─────────────────────────────────────────────────────────────
 
+def _on_job_error(event) -> None:
+    """잡 실행 중 예외 발생 시 Discord로 통보.
+
+    APScheduler 리스너가 이벤트 루프 스레드에서 호출된다는 보장이 없으므로,
+    asyncio.create_task 대신 동기 진입점(notify_error_sync)으로 보낸다 — 전송은
+    내부에서 자체적으로 처리되고 절대 예외를 던지지 않는다.
+    event.traceback은 사전 포맷된 스택 문자열이라 그대로 넘긴다(예외 객체의
+    __traceback__은 리스너까지 살아오지 않는 경우가 있음).
+    """
+    from services.notify import notify_error_sync
+    notify_error_sync(
+        f"스케줄러 잡 '{event.job_id}'",
+        exc=event.exception,
+        tb_text=event.traceback,
+    )
+
+
 def setup_scheduler() -> AsyncIOScheduler:
+    # 잡 실행 예외를 단일 리스너로 포착해 Discord 알림으로 보낸다(매 분 도는 미수신
+    # 체크가 조용히 죽는 것을 방지). 5개 잡 전부 이 리스너 하나로 커버된다.
+    scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
+
     # 각 잡을 advisory lock으로 감싼다 — 멀티 인스턴스에서 같은 시각에 여러 스케줄러가
     # fire해도 락을 잡은 하나만 실제로 실행되어 중복 push/중복 정리를 차단한다.
     scheduler.add_job(_singleton(LOCK_HEARTBEAT_CHECK)(job_heartbeat_check), CronTrigger(second=0), id="heartbeat_check", replace_existing=True)
