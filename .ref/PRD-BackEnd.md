@@ -518,6 +518,34 @@ Response: 200 OK
 }
 ```
 
+#### Heartbeat 영구 하위호환 계약 (`HeartbeatIn`)
+
+> **불변식: heartbeat 수신은 어떤 앱 버전이 보내도 절대 스키마 사유로 거부하지 않는다.**
+> 이 계약 덕분에 클라이언트는 **heartbeat 전송 유도 알림(Android `subject_safety_net`, iOS `gs_deadman`, Android `send_failed`)으로 앱이 런치되면 버전 체크(강제 업데이트 포함)를 skip**할 수 있다 — 구버전이 보낸 안부 신호도 항상 수신되므로 "보낸 줄 알았는데 서버가 거부"하는 거짓 안심이 구조적으로 발생하지 않는다. (보호자 알림/일반 아이콘 실행 런치는 버전 체크 정상 적용 — 구버전 호환성이 깨진 화면을 잘못 보여주느니 업데이트를 유도. 클라 분기는 PRD-FrontEnd §9.0 / `splash_controller`.)
+
+`HeartbeatIn` Pydantic 모델(`models/heartbeat.py`)은 이 계약을 다음으로 강제한다:
+
+| 방향 | 시나리오 | 처리 | 구현 |
+|------|----------|------|------|
+| **상위호환 (forward)** | 신버전이 서버가 **모르는 새 필드**를 추가해 전송 | 무시하고 200 OK 수신 → 서버 스키마 마이그레이션 없이 클라가 자율 진화 | `model_config = ConfigDict(extra="ignore")` (Pydantic v2 기본값이나 **명시적으로 박아 계약화**) |
+| **하위호환 (backward)** | 구버전이 일부 필드를 **누락**하고 전송 | 기본값으로 흡수, 400 미발생 | 아래 필드별 기본값 |
+
+**필드별 required/기본값:**
+
+| 필드 | required | 누락 시 | 비고 |
+|------|----------|---------|------|
+| `device_id` | ✅ 필수 | (없으면 처리 불가 — 기기 조회 키) | 유지 |
+| `timestamp` | ✅ 필수 | (없으면 처리 불가) | 유지 |
+| `manual` | optional | `False` | |
+| `steps_delta` | optional | `None` | `ge=0`(음수 차단) |
+| `suspicious` | optional | **`False`(정상/활동확인)** | 과거 required였으나 누락으로 400 내지 않도록 안전 기본값 부여 — 누락을 "정상"으로 흡수해 거짓 경고 방지 |
+| `battery_level` | optional | `None` | `0~100` |
+| `scheduled_key` | optional | `None` | idempotency key |
+
+> ⚠️ **`extra="forbid"`로 절대 변경 금지** — 변경 시 신버전이 추가한 필드 때문에 구버전 호환이 깨지고, 위 "버전 체크 skip" 전제가 무너진다. 라우터는 `body.model_dump()`로 처리 로직에 넘기므로 extra 필드는 검증 단계에서 드롭되어 처리 로직은 알려진 필드만 받는다(부수효과 없음).
+>
+> **신규 필드 추가 시 규칙**: 새 heartbeat 필드는 **항상 optional + 안전 기본값**으로 추가한다(절대 required로 추가 금지). 그래야 구버전이 그 필드를 안 보내도 계속 수신되어 위 불변식이 유지된다.
+
 - 서버는 heartbeat 수신 시 해당 기기의 `last_seen`을 갱신
 - heartbeat 수신 시 해당 대상자의 active 경고가 있으면 → 자동 해소 (status: `resolved`) + 보호자에게 "정상 복귀" Push 발송
 - 대상자는 구독과 무관하게 항상 heartbeat 전송 (구독은 보호자가 관리)
