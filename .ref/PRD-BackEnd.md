@@ -314,7 +314,8 @@ server/
 │   ├── subscription_service.py     # 구독 상태 관리 (영수증 검증 + DB 반영)
 │   ├── iap_verify_service.py       # Apple/Google IAP API 호출 (verify + acknowledge)
 │   ├── iap_notification_service.py # RTDN 페이로드 분기 + DB UPDATE (Google + Apple 공용)
-│   └── scheduler.py                # APScheduler 미수신 경고 체크 + 구독 만료 + 정리 작업
+│   ├── scheduler.py                # APScheduler 미수신 경고 체크 + 구독 만료 + 정리 작업 + 잡 오류 Discord 알림 리스너
+│   └── notify.py                   # Discord 에러 웹훅 알림 + 최근 로그 링버퍼 (§10.5 운영 모니터링)
 ├── models/
 │   ├── user.py                     # Pydantic 모델 (요청/응답 스키마)
 │   ├── device.py
@@ -1889,6 +1890,7 @@ python-dotenv==1.1.*
 - **환경변수**: Railway 대시보드에서 설정 (코드에 비밀 정보 포함하지 않음)
   - `FIREBASE_CREDENTIALS`: FCM 인증 키 JSON
   - `ADMIN_SECRET_KEY`: Admin API 인증 키 (Postman에서 앱 버전 설정 시 사용)
+  - `DISCORD_WEBHOOK_URL`: 에러 알림 Discord 웹훅 URL (§10.5 운영 모니터링). 미설정 시 알림 기능 자동 비활성(no-op)이라 로컬/테스트에 안전
 
 **Dockerfile (Railway 배포 설정):**
 ```dockerfile
@@ -1922,6 +1924,34 @@ CMD ["python", "main.py"]
 | **합계** | **약 $2~6/월** |
 
 **손익분기점:** 구독자 **7명**이면 서버 비용 충당 ($9.99 × 7 × 85% ÷ 12 = $4.95/월)
+
+
+### 10.5 운영 모니터링 (Discord 에러 알림)
+
+**목적:** 실서버에서 예외가 발생하면 **즉시 Discord로 실시간 경보**를 보내 조용한 실패를 막는다. 특히 ① **APScheduler 잡**(매 분 도는 미수신 체크 등)이 예외로 죽으면 보호자 경고가 통째로 멈추는데도 로그만 남고 아무도 모르던 문제, ② Railway가 재배포 시 로그를 휘발시켜 사후 추적이 어려운 문제를 함께 완화한다.
+
+**구현:** `services/notify.py` (신규). **새 외부 의존성 없이** 표준 라이브러리(`urllib`)로 Discord 웹훅에 POST한다.
+
+| 원칙 | 내용 |
+|------|------|
+| 비활성 안전 | `DISCORD_WEBHOOK_URL` 미설정 시 완전 no-op — 로컬/테스트 영향 없음 |
+| 본 기능 보호 | 알림 전송 실패는 삼킨다(절대 예외를 밖으로 던지지 않음) — 알림이 본 로직을 깨면 안 됨 |
+| 도배 방지 | 같은 컨텍스트는 인메모리 throttle로 **5분 1회**만 전송 (매 분 실패하는 잡 대응) |
+| Discord 403 회피 | 기본 `Python-urllib` User-Agent가 403 차단되므로 명시 User-Agent 헤더 전송 |
+
+**포착 지점 (2곳):**
+
+1. **스케줄러 잡 오류** — `setup_scheduler()`에 `EVENT_JOB_ERROR` 리스너 1개를 달아 5개 잡 전부를 단일 포착한다. 리스너가 이벤트 루프 스레드에서 호출된다는 보장이 없어 동기 전송 진입점(`notify_error_sync`)을 쓰고, 스택은 예외 객체의 `__traceback__`(리스너까지 살아오지 않을 수 있음) 대신 APScheduler가 주는 사전 포맷 문자열 `event.traceback`을 쓴다.
+2. **API 미처리 예외(500)** — `main.py`의 전역 `@app.exception_handler(Exception)`. `HTTPException`(401/404 등 의도된 4xx)·422 검증 오류는 FastAPI가 별도 처리하므로 여기로 오지 않는다(진짜 서버 오류만 포착). 비동기 컨텍스트라 전송은 `asyncio.to_thread`로 떼어 이벤트 루프를 막지 않는다.
+
+**알림에 담기는 정보:** 예외 타입+메시지 · 발생 위치(잡 ID 또는 `METHOD /path`) · 스택트레이스 · **에러 직전 로그 N줄**.
+- "에러 직전 로그"는 루트 로거에 부착한 고정 크기 deque 링버퍼(`_RingBufferHandler`, 기본 50줄)에서 가져온다. `emit`은 포맷된 한 줄을 deque에 append할 뿐이라 **O(1)·고정 메모리**이고, **네트워크 전송은 에러 순간에만** 일어난다 — 외부 로그 저장소(예: Axiom)로 모든 로그를 상시 전송하는 방식과 달리 **평소 자원 부담이 사실상 0**이다. 그 대신 보관 범위는 "에러 직전 맥락"으로 한정되며 장기 추세·검색은 제공하지 않는다(현 단계에선 의도된 트레이드오프).
+
+**부담 / 한계:**
+- throttle·링버퍼는 **프로세스 단위**다. Railway 레플리카가 여럿이면 같은 API 500이 레플리카당 1회씩 알림될 수 있다. 단 **스케줄러 잡은 advisory lock으로 단일 실행**되므로 잡 오류 알림은 중복되지 않는다.
+- **개인정보:** "직전 로그"에 device_id 등 운영 데이터가 섞일 수 있으나, ⓐ 운영자 **비공개 Discord 채널**로만 가고 ⓑ **에러 순간에만** 전송된다(스택트레이스도 동일 성격). 외부 저장소로 상시 내보내는 방식이 아니므로 별도 마스킹 설계는 두지 않는다 — 외부 로그 저장소를 도입할 경우엔 민감값 마스킹을 함께 설계해야 한다.
+
+**미채택 (참고):** 전체 로그를 외부 저장소(Axiom 등)로 상시 전송하는 영구 로그 보관은 상시 CPU·네트워크 부담과 버퍼 누적 위험이 있어 현 단계에선 보류한다. 간헐적 버그의 과거 시점 추적·응답시간 추세·로그 검색이 필요해지는 시점에 재검토한다.
 
 
 ---
