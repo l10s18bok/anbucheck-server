@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS app_versions (
     await conn.execute("""
 INSERT INTO app_versions (platform, latest_version, min_version, store_url)
 VALUES
-  ('android', '1.0.0', '1.0.0', 'https://play.google.com/store/apps/details?id=kr.co.anbucheck.app'),
+  ('android', '1.0.0', '1.0.0', 'https://play.google.com/store/apps/details?id=kr.co.anbucheck.live'),
   ('ios', '1.0.0', '1.0.0', 'https://apps.apple.com/app/id000000000')
 ON CONFLICT DO NOTHING
 """)
