@@ -44,7 +44,7 @@
 ### 1.5 수익 모델
 - **보호자가 결제**: 3개월 무료 체험 → 이후 연 $9.99 자동 갱신 구독
 - **대상자 앱은 완전 무료** (결제 기능 없음, heartbeat 전송만 담당)
-- **대상자 최대 5명** (단일 요금, 티어 구분 없음)
+- **대상자 최대 5명** (현재 단일 요금·티어 구분 없음 — 단, 한도는 보호자별 `users.max_subjects`(기본 5)로 관리되며 향후 유료 결제로 상향 가능하도록 동적화됨. `get_max_subjects()` 헬퍼가 단일 출처)
 - **하단 고정 배너 광고** (유료 구독 보호자는 광고 제거)
 
 
@@ -424,7 +424,8 @@ Response: 200 OK
 
 - invite_code가 존재하지 않으면 404 에러
 - 이미 연결된 대상자이면 409 에러
-- 연결된 대상자가 5명 이상이면 400 에러 (`"대상자는 최대 5명까지 등록 가능합니다"`)
+- **자기 자신(보호자 본인의 invite_code)을 연결하려 하면 400 에러** (`"자기 자신을 대상자로 연결할 수 없습니다"`). G+S(Guardian+Subject) 보호자만 invite_code를 가지므로 이 경우에만 발생. 클라이언트는 본인 코드를 사전 비교해 API 호출 전에 차단하고(`add_subject_error_self`), 이 400은 백스톱
+- 연결된 대상자가 **보호자별 최대 인원(`users.max_subjects`, 기본 5)** 이상이면 400 에러 (`"대상자는 최대 {max_subjects}명까지 등록 가능합니다"` — 메시지의 숫자도 보호자별 값으로 동적). 클라이언트는 `can_add_more`로 사전 차단(`add_subject_error_limit`, `@max`=서버 `max_subjects`)하고, 이 400은 stale 캐시 race용 백스톱
 - 보호자의 구독이 만료된 경우에도 연결은 가능 (구독 복구 시 즉시 서비스 시작)
 
 
@@ -454,6 +455,8 @@ Response: 200 OK
 }
 ```
 
+- `max_subjects`: 보호자별 최대 대상자 등록 인원. `users.max_subjects` 컬럼(기본 5)에서 조회한 동적 값 — 과거 전역 상수 `MAX_SUBJECTS`는 폐지되고 `subject_service.get_max_subjects(db, guardian_user_id)` 헬퍼로 일원화됨(한도 체크·에러 문구·이 응답 4곳 공통). 유료 결제로 한도를 상향하는 기획 시 결제 검증 시점에 `UPDATE users SET max_subjects` 만으로 반영
+- `can_add_more`: `len(subjects) < max_subjects`
 - `status`: `normal` (정상), `warning` (경고)
 - `alert`: 활성 경고가 있으면 `{ "id": 10, "days_inactive": 2 }`, 없으면 `null`
 - `device_id`: 대상자 기기 고유 ID
@@ -1269,9 +1272,12 @@ CREATE TABLE IF NOT EXISTS users (
                     -- 'subject' (대상자) 또는 'guardian' (보호자)
     invite_code     TEXT UNIQUE,                       -- 대상자 고유 코드 (보호자는 NULL)
     device_token    TEXT NOT NULL UNIQUE,               -- API 인증용 Bearer 토큰 (무제한)
+    max_subjects    INTEGER NOT NULL DEFAULT 5,         -- 보호자별 최대 대상자 등록 인원 (기본 5, 유료로 상향 가능). 과거 전역 상수 MAX_SUBJECTS 대체
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- 기존 DB 대응: ALTER TABLE users ADD COLUMN IF NOT EXISTS max_subjects INTEGER NOT NULL DEFAULT 5
+--   (NOT NULL DEFAULT 로 기존 보호자 행에도 5가 자동 백필)
 
 CREATE INDEX IF NOT EXISTS idx_users_role ON users (role);
 
