@@ -88,11 +88,18 @@ CREATE TABLE IF NOT EXISTS users (
     role            TEXT NOT NULL DEFAULT 'subject',
     invite_code     TEXT UNIQUE,
     device_token    TEXT NOT NULL UNIQUE,
+    max_subjects    INTEGER NOT NULL DEFAULT 5,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )
 """)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_role ON users (role)")
+
+    # max_subjects 컬럼 마이그레이션 (기존 DB 대응) — 보호자별 최대 대상자 등록 인원.
+    # 기본 5명, 유료 결제로 상향 가능(향후). MAX_SUBJECTS 전역 상수를 대체.
+    await conn.execute("""
+ALTER TABLE users ADD COLUMN IF NOT EXISTS max_subjects INTEGER NOT NULL DEFAULT 5
+""")
 
     await conn.execute("""
 CREATE TABLE IF NOT EXISTS devices (

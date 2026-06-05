@@ -19,8 +19,8 @@ DEFAULT_HEARTBEAT_MINUTE = 0
 # Free trial duration in days
 FREE_TRIAL_DAYS = 90
 
-# Max subjects per guardian
-MAX_SUBJECTS = 5
+# 보호자별 최대 대상자 등록 인원은 users.max_subjects 컬럼(기본 5)으로 관리한다.
+# (과거 MAX_SUBJECTS 전역 상수는 services.subject_service.get_max_subjects 로 대체됨)
 
 # Rate limit (requests per 60s window)
 LINK_RATE_LIMIT = int(os.getenv("LINK_RATE_LIMIT", "5"))           # /subjects/link — 보호자(user_id) 기준

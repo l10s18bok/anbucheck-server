@@ -3,7 +3,16 @@ from zoneinfo import ZoneInfo
 
 import asyncpg
 from fastapi import HTTPException, status
-from config import MAX_SUBJECTS
+
+
+async def get_max_subjects(db: asyncpg.Connection, guardian_user_id: int) -> int:
+    """보호자별 최대 대상자 등록 인원 조회 (users.max_subjects, 기본 5).
+
+    유료 결제로 한도를 상향하는 기획이 확정되면 결제 검증 시점에
+    UPDATE users SET max_subjects = N 만 해주면 이 함수가 자동으로 반영한다.
+    """
+    value = await db.fetchval("SELECT max_subjects FROM users WHERE id = $1", guardian_user_id)
+    return value if value is not None else 5
 
 
 async def link_subject(db: asyncpg.Connection, guardian_user_id: int, invite_code: str) -> dict:
@@ -38,10 +47,11 @@ async def link_subject(db: asyncpg.Connection, guardian_user_id: int, invite_cod
         "SELECT COUNT(*) AS cnt FROM guardians WHERE guardian_user_id = $1",
         guardian_user_id,
     )
-    if cnt_row["cnt"] >= MAX_SUBJECTS:
+    max_subjects = await get_max_subjects(db, guardian_user_id)
+    if cnt_row["cnt"] >= max_subjects:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"대상자는 최대 {MAX_SUBJECTS}명까지 등록 가능합니다",
+            detail=f"대상자는 최대 {max_subjects}명까지 등록 가능합니다",
         )
 
     # 연결 생성
@@ -124,10 +134,11 @@ async def get_subjects(db: asyncpg.Connection, guardian_user_id: int) -> dict:
     else:
         subscription_active = False
 
+    max_subjects = await get_max_subjects(db, guardian_user_id)
     return {
         "subjects": subjects,
-        "max_subjects": MAX_SUBJECTS,
-        "can_add_more": len(subjects) < MAX_SUBJECTS,
+        "max_subjects": max_subjects,
+        "can_add_more": len(subjects) < max_subjects,
         "subscription_active": subscription_active,
     }
 
