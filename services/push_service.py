@@ -77,8 +77,13 @@ async def send_push(
     body: str,
     data: Optional[dict] = None,
     sound: Optional[str] = "default",
+    notification_tag: Optional[str] = None,
 ) -> bool:
-    """일반 Push 알림 발송"""
+    """일반 Push 알림 발송.
+
+    notification_tag: Android AndroidNotification.tag 직접 지정.
+      None이면 data의 subject_user_id / invite_code 기반 자동 계산.
+    """
     messaging = _get_messaging()
     if messaging is None:
         return False
@@ -88,7 +93,7 @@ async def send_push(
         # 대상자별 그룹화 키 — subject_user_id 우선, 없으면 invite_code, 둘 다 없으면 'default'
         # 앱이 포그라운드/백그라운드/종료 상태 모두에서 OS가 같은 키로 묶어 표시
         group_id = msg_data.get("subject_user_id") or msg_data.get("invite_code") or "default"
-        group_key = f"anbu_subject_{group_id}"
+        group_key = notification_tag or f"anbu_subject_{group_id}"
 
         message = messaging.Message(
             notification=messaging.Notification(title=title, body=body),
@@ -182,6 +187,7 @@ async def push_subject_safety_net(fcm_token: str, locale: str = "ko_KR") -> bool
         body=get_message(locale, "push_subject_safety_net_body"),
         data={"type": "subject_safety_net"},
         sound="default",
+        notification_tag="anbu_safety_net",  # 전용 태그 — 구독/보호자 알림의 anbu_subject_default와 분리
     )
 
 
