@@ -152,12 +152,17 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     # 이 플래그는 auto_report / steps 알림 중복 생성을 차단하는 데 쓴다.
     # heartbeat_logs INSERT는 매번 수행(이력·차트용), 알림 생성만 당일 첫 수신에 한정.
     is_first_today = await db.fetchval(
-        """SELECT NOT EXISTS (
-               SELECT 1 FROM heartbeat_logs
+        """WITH safe AS (
+               SELECT COALESCE(z.name, 'Asia/Seoul') AS tz
+               FROM (SELECT $2::text AS inp) t
+               LEFT JOIN pg_timezone_names z ON z.name = t.inp
+           )
+           SELECT NOT EXISTS (
+               SELECT 1 FROM heartbeat_logs, safe
                WHERE device_id = $1
                  AND server_ts >= (
-                     (now() AT TIME ZONE COALESCE($2, 'Asia/Seoul'))::date
-                 )::timestamp AT TIME ZONE COALESCE($2, 'Asia/Seoul')
+                     (now() AT TIME ZONE safe.tz)::date
+                 )::timestamp AT TIME ZONE safe.tz
            )""",
         device_id,
         device["timezone"],

@@ -190,7 +190,11 @@ async def get_step_history(
     if not device_id:
         return [None] * days
 
-    tz = ZoneInfo(tz_name or "Asia/Seoul")
+    try:
+        tz = ZoneInfo(tz_name or "Asia/Seoul")
+    except Exception:
+        tz = ZoneInfo("Asia/Seoul")
+        tz_name = "Asia/Seoul"
     today = datetime.now(tz).date()
     start_date = today - timedelta(days=days - 1)
     created_date = user_created_at.astimezone(tz).date()
@@ -199,16 +203,19 @@ async def get_step_history(
     end_utc = datetime.combine(today + timedelta(days=1), datetime.min.time(), tz)
 
     rows = await db.fetch(
-        """SELECT DATE(server_ts AT TIME ZONE $1) AS day, MAX(steps_delta) AS max_steps
+        """SELECT server_ts, steps_delta
            FROM heartbeat_logs
-           WHERE device_id = $2 AND server_ts >= $3 AND server_ts < $4
-           GROUP BY day""",
-        tz_name or "Asia/Seoul",
+           WHERE device_id = $1 AND server_ts >= $2 AND server_ts < $3""",
         device_id,
         start_utc,
         end_utc,
     )
-    day_map = {r["day"]: r["max_steps"] for r in rows}
+    day_map: dict = {}
+    for row in rows:
+        local_date = row["server_ts"].astimezone(tz).date()
+        steps = row["steps_delta"] if row["steps_delta"] is not None else 0
+        if steps > day_map.get(local_date, 0):
+            day_map[local_date] = steps
 
     result: list[int | None] = []
     for i in range(days):

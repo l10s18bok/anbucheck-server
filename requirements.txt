@@ -4,6 +4,8 @@ asyncpg==0.30.*
 apscheduler==3.11.*
 firebase-admin==6.6.*
 python-dotenv==1.1.*
+# slim 이미지에서 zoneinfo가 IANA 전체 timezone 데이터(US/Pacific 등 legacy alias 포함)를 인식하도록
+tzdata>=2025.1
 # 인앱 결제 영수증 검증
 app-store-server-library>=1.4
 google-api-python-client>=2.140
