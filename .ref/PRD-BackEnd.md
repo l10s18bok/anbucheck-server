@@ -462,7 +462,14 @@ Response: 200 OK
 - `device_id`: 대상자 기기 고유 ID
 - `heartbeat_hour`, `heartbeat_minute`: 대상자의 heartbeat 예약 시각
 - `battery_level`: 마지막 heartbeat 시 배터리 잔량 (0~100, 없으면 `null`)
+- `weekly_steps`: 대상자 로컬 타임존 기준 최근 7일 일별 최대 걸음수 배열 (index 0 = 6일 전, 마지막 = 오늘). `users.created_at` 이전 날짜는 `null`(등록 전), 이후 heartbeat 없는 날은 `0`
 - 이름 없음 — 클라이언트가 로컬 별칭과 `invite_code`를 매칭하여 표시
+
+**`weekly_steps` / 30일 걸음수 이력 타임존 처리 (`subject_service.get_step_history`)**:
+- `devices.timezone`(IANA 문자열)을 Python `ZoneInfo`로 파싱해 대상자 현지 자정을 기준으로 날짜 경계(`start_utc`, `end_utc`)를 계산한다.
+- SQL은 `SELECT server_ts, steps_delta FROM heartbeat_logs WHERE device_id=$1 AND server_ts >= $2 AND server_ts < $3`만 수행하며 `AT TIME ZONE`을 사용하지 않는다. 날짜 버킷팅은 Python에서 `row["server_ts"].astimezone(tz).date()`로 처리 — SQL `AT TIME ZONE`과 Python `ZoneInfo` 사이 불일치(아래 주의사항) 원천 차단.
+- **legacy alias 처리**: Android `flutter_timezone`은 "US/Pacific", "Japan", "ROK", "PRC", "Brazil/East" 등 legacy IANA alias를 반환할 수 있다. `python:3.12-slim`에 `tzdata` 패키지를 설치(`requirements.txt`)해 `ZoneInfo(alias)` 호출이 성공하도록 한다. 파싱 실패 시 `except Exception`으로 `ZoneInfo("Asia/Seoul")` 폴백.
+- ⚠️ `AT TIME ZONE`과 Python `ZoneInfo`를 혼용하면 안 된다: Railway PostgreSQL의 pg_timezone_names에는 legacy alias가 없어 SQL은 폴백(Seoul)으로, Python은 tzdata로 정확한 alias를 인식하면 날짜 키가 달라져 걸음수 차트가 하루 밀린다. 버킷팅은 반드시 Python 단독으로 처리할 것.
 
 
 ### 4.5 대상자 연결 해제 (보호자용)
@@ -555,6 +562,8 @@ Response: 200 OK
 - 보호자 구독이 만료된 경우, heartbeat는 수신하되 보호자에게 경고/알림을 발송하지 않음
 - **서버 판정 로직** (상세: [heartbeat_flowchart.md](heartbeat_flowchart.md) 차트 2):
   - `is_first_today` 판정: 기기 로컬 타임존 자정 이후 수신 이력 — `heartbeat_logs` INSERT **전**에 조회해야 정확 (INSERT 이후엔 항상 false). `auto_report` / `steps` 알림 **중복 방지에만** 사용. heartbeat_logs INSERT는 매번 수행 (이력·차트용)
+    - **legacy timezone alias 처리**: Android `flutter_timezone`이 반환하는 "US/Pacific", "Japan", "ROK", "PRC", "Brazil/East" 등 legacy IANA alias는 Railway PostgreSQL `pg_timezone_names`에 존재하지 않아 `AT TIME ZONE` 사용 시 `InvalidParameterValueError`로 크래시. `heartbeat_service.py`의 `is_first_today` 쿼리에 scheduler.py와 동일한 `pg_timezone_names LEFT JOIN COALESCE(..., 'Asia/Seoul')` CTE 패턴을 적용 — 미인식 alias는 Asia/Seoul로 폴백(날짜 경계가 UTC+9 기준으로 계산되나 크래시 없음).
+    - ⚠️ **불변 규칙**: 사용자 제공 timezone 문자열을 SQL `AT TIME ZONE`에 직접 전달하는 패턴은 사용 금지. 반드시 `WITH safe AS (SELECT COALESCE(z.name, 'Asia/Seoul') AS tz FROM (SELECT $N::text AS inp) t LEFT JOIN pg_timezone_names z ON z.name = t.inp)` CTE를 앞에 두고 `safe.tz`를 참조하거나, Python-side에서 버킷팅하여 SQL `AT TIME ZONE` 자체를 제거해야 한다.
   - `battery_level` ≤ 10% + 기존 info 경고 없으면 → 정보 등급 1회 발송 (중복 방지, DND 적용)
   - `suspicious` = false → `resolve_active_alerts` 호출 후 반환된 `resolved_levels` 기준 분기:
     - caution / warning / urgent 중 **하나라도** 해소 → "정상 복귀" Push (auto_report 중복이라 스킵)
