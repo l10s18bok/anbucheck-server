@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import logging
@@ -298,45 +297,3 @@ async def create_alert(
     return alert_id
 
 
-async def send_alert_to_guardians(
-    db: asyncpg.Connection,
-    subject_user_id: int,
-    alert_level: str,
-    battery_level: int | None = None,
-) -> None:
-    """보호자들에게 경고 Push 발송 (구독 활성 보호자만)"""
-    guardians = await db.fetch(
-        """SELECT DISTINCT ON (g.guardian_user_id)
-                  d.fcm_token, g.guardian_user_id
-           FROM guardians g
-           JOIN subscriptions s ON s.user_id = g.guardian_user_id
-           JOIN devices d ON d.user_id = g.guardian_user_id
-           WHERE g.subject_user_id = $1
-             AND s.plan != 'expired'
-             AND s.expires_at > NOW()
-             AND d.fcm_token IS NOT NULL
-             AND d.fcm_token != ''
-           ORDER BY g.guardian_user_id, d.updated_at DESC""",
-        subject_user_id,
-    )
-
-    # 대상자 invite_code 조회
-    invite_row = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", subject_user_id)
-    invite_code = invite_row["invite_code"] if invite_row else None
-
-    def _make_push_coro(token: str):
-        if alert_level == "info_battery_low":
-            return push_service.push_battery_low(token, subject_user_id, invite_code=invite_code)
-        if alert_level == "info_battery_dead":
-            return push_service.push_battery_dead(token, subject_user_id, battery_level or 0, invite_code=invite_code)
-        if alert_level == "caution":
-            return push_service.push_caution(token, subject_user_id, invite_code=invite_code)
-        if alert_level == "warning":
-            return push_service.push_warning(token, subject_user_id, invite_code=invite_code)
-        if alert_level == "urgent":
-            return push_service.push_urgent(token, subject_user_id, invite_code=invite_code)
-        return None
-
-    coros = [c for g in guardians if (c := _make_push_coro(g["fcm_token"])) is not None]
-    if coros:
-        await asyncio.gather(*coros, return_exceptions=True)

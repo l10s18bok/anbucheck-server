@@ -577,6 +577,7 @@ Response: 200 OK
     - suspicious_count≥3 → urgent 등급 + `message_key="urgent_suspicious"` + `push_urgent(reason="suspicious")` (매일 반복, days_inactive 반영)
     - 보호자 경고 클리어 시 suspicious_count 리셋 → 다음 suspicious부터 1차 재시작
     - suspicious 경로는 scheduler 미수신 경로(`warning`/`urgent`)와 별도 문구("활동 기록 없음" — 걸음 0 + 발화 시점 기기 미사용)로 분리됨
+    - ⚠️ **사고 이력 (2026-07-10)**: suspicious 전용 문구 도입 시 `push_caution`에만 `reason` 파라미터가 추가되고 `push_warning`/`push_urgent`에는 누락 → suspicious_count 2회차(warning)·3회차(urgent) 판정 순간 `TypeError: unexpected keyword argument 'reason'`으로 **POST /heartbeat 전체가 500**으로 죽는 프로덕션 장애 발생(1회차 caution은 정상이라 늦게 발현). 수정: 두 함수에 `reason: str = "missing"` 추가 + suspicious 분기(`push_warning_suspicious_body`/`push_urgent_suspicious_body`, 20개 언어). scheduler 미수신 경로는 `reason` 미전달 → 기본값 `"missing"`으로 기존 문구 유지. push_* 시그니처 변경 시 **세 등급 함수(caution/warning/urgent)를 항상 함께** 변경할 것. 같은 커밋에서 미사용 잔재 `alert_service.send_alert_to_guardians`(locale 미전달 결함 보유, 호출부 0곳) 삭제됨 — 보호자 발송은 `heartbeat_service._push_to_guardians`(heartbeat 경로)와 `scheduler.py` lambda(미수신 경로)만 사용
 
 
 ### 4.7 긴급 도움 요청 (대상자 전용)
@@ -1711,6 +1712,7 @@ ORDER BY g.guardian_user_id, d.updated_at DESC;
 - iOS: `identifierForVendor`는 vendor 앱 전부 삭제 후 재설치 시 값이 변경되므로, 클라이언트가 최초 발급 시 Keychain(`accessibility=unlocked_this_device`)에 백업 → 재설치 시 Keychain 우선 조회로 동일 device_id 복원
 - 서버는 플랫폼과 무관하게 동일 device_id를 수신하므로 위 복원 로직(기존 계정 자동 복원)이 그대로 유효
 - iOS Keychain 백업은 계정 복원 전용이며 iCloud 동기화 차단 → fingerprinting 정책과 무관
+- ⚠️ **이 가정이 실제로 깨졌던 사고 (2026-07-04)**: 클라이언트가 한동안 Android SSAID 대신 `device_info_plus`의 `AndroidDeviceInfo.id`(=`Build.ID`, 펌웨어 빌드 식별자)를 device_id로 잘못 사용 — 같은 기종·같은 빌드의 서로 다른 물리 기기가 동일 device_id를 서버로 보내면서, 아래 "기존 기기 재가입" 분기가 두 사람의 계정을 하나로 병합하고 원래 소유자의 device_token을 덮어써 401로 잠그는 사고로 이어짐. 클라이언트 수정 완료(`kr.co.anbucheck` PRD-FrontEnd.md §3.4 참조, 네이티브 채널로 진짜 SSAID 조회). **다만 서버 쪽 근본 메커니즘("device_id 일치만으로 기존 계정을 통째로 넘겨주고 device_token을 덮어씀")은 그대로 남아있다** — device_id 위조/우연한 충돌 시 계정 탈취로 이어질 수 있는 구조적 위험이므로, 클라이언트 수정과 별개로 향후 검토 대상
 
 
 ---
