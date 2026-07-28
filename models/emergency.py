@@ -13,6 +13,7 @@ class LocationPayload(BaseModel):
 class EmergencyIn(BaseModel):
     device_id: str = Field(..., min_length=1, max_length=256)
     location: LocationPayload | None = None
+    message: str | None = Field(default=None, max_length=100)
 
 
 class EmergencyOut(BaseModel):

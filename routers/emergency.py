@@ -20,5 +20,6 @@ async def emergency(
         user["user_id"],
         body.device_id,
         location=body.location,
+        message=body.message,
     )
     return EmergencyOut(**result)

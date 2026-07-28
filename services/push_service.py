@@ -335,6 +335,7 @@ async def push_emergency(
     lat: float | None = None,
     lng: float | None = None,
     accuracy: float | None = None,
+    message: str | None = None,
 ) -> bool:
     data: dict = {
         "type": "alert_emergency",
@@ -348,10 +349,14 @@ async def push_emergency(
         data["lng"] = str(round(lng, 6))
     if accuracy is not None:
         data["accuracy"] = str(round(accuracy, 2))
+    # 대상자가 함께 남긴 말이 있으면 본문을 그 원문으로 치환한다(방식 A).
+    # 제목은 로케일별 정형 문구를 유지하므로 긴급 상황임은 그대로 전달된다.
+    note = message.strip() if message else None
+    body = note if note else get_message(locale, "push_emergency_body")
     return await send_push(
         fcm_token,
         title=get_message(locale, "push_emergency_title"),
-        body=get_message(locale, "push_emergency_body"),
+        body=body,
         data=data,
         sound=sound,
     )

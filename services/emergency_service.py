@@ -22,10 +22,19 @@ async def process_emergency(
     user_id: int,
     device_id: str,
     location: LocationPayload | None = None,
+    message: str | None = None,
 ) -> dict:
     """대상자가 긴급 도움 요청 버튼을 눌렀을 때 처리.
-    location이 있으면 notification_events에 좌표를 저장하고 FCM data에도 포함."""
+    location이 있으면 notification_events에 좌표를 저장하고 FCM data에도 포함.
+    message(대상자가 함께 남긴 말)가 있으면 message_params.note로 저장하고,
+    보호자 푸시 본문을 대상자 원문으로 치환한다(방식 A — 번역 없이 육성 그대로 전달).
+    긴급 위치와 동일하게 긴급 이벤트에 종속된 휘발성 데이터로, 자정 정리 시 함께 삭제된다."""
     now_dt = datetime.now(timezone.utc)
+
+    # 사용자 메시지 정규화 — 공백만 있으면 없는 것으로 간주
+    note = message.strip() if message else None
+    if not note:
+        note = None
 
     # 1. 대상자 정보 조회
     invite_code = await _get_invite_code(db, user_id)
@@ -59,6 +68,7 @@ async def process_emergency(
         get_message("ko_KR", "push_emergency_title"),
         get_message("ko_KR", "push_emergency_body"),
         message_key="emergency",
+        message_params={"note": note} if note else None,
         location_lat=loc_lat,
         location_lng=loc_lng,
         location_accuracy=loc_acc,
@@ -80,6 +90,7 @@ async def process_emergency(
                     g["fcm_token"], user_id,
                     invite_code=invite_code, locale=locale,
                     lat=loc_lat, lng=loc_lng, accuracy=loc_acc,
+                    message=note,
                 )
             )
         if coros:

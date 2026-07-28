@@ -38,7 +38,7 @@
 - 대상자-보호자 연결은 서버가 발급한 **고유 코드(invite_code)**로 매칭
 - DB가 유출되어도 개인 식별 불가 (device_id, invite_code만 존재)
 - 보호자가 대상자를 식별하기 위한 별칭은 클라이언트 로컬에만 저장
-- **위치정보는 정기 heartbeat에서 수집하지 않음.** 대상자가 `POST /api/v1/emergency` 호출 시 사용자 동의 하에 lat/lng/accuracy를 1회 첨부할 수 있으며, 서버는 `notification_events` 테이블에만 저장하고 대상자 기기 타임존 자정 스케줄러가 다른 알림과 함께 일괄 삭제 (§4.7 / §6.4 참조)
+- **위치정보는 정기 heartbeat에서 수집하지 않음.** 대상자가 `POST /api/v1/emergency` 호출 시 사용자 동의 하에 lat/lng/accuracy를 1회 첨부할 수 있으며, 서버는 `notification_events` 테이블에만 저장하고 대상자 기기 타임존 자정 스케줄러가 다른 알림과 함께 일괄 삭제 (§4.7 / §6.4 참조). 긴급 요청 시 대상자가 다이얼로그에 직접 입력한 선택 메시지(`message`, 최대 100자)도 동일 정책 — `notification_events.message_params.note`에만 저장, 자정 정리 시 삭제, 미입력 시 없음 (자유 입력이므로 대상자 본인의 자발적 자기 진술)
 
 
 ### 1.5 수익 모델
@@ -212,7 +212,9 @@ heartbeat 수신 → last_seen 갱신
   ├─ 즉시 urgent 등급 경고 생성 (caution→warning→urgent 단계 생략)
   │   · alerts 테이블: alert_level='urgent', note='emergency_request'
   │   · notification_events 테이블: message_key='emergency'
+  │     (message 있으면 message_params.note에 원문 저장 — optional, max 100)
   ├─ 연결된 보호자 전원에게 긴급 Push 발송 (DND 무시, 구독 만료 무관)
+  │   (message 있으면 Push 본문을 대상자 원문으로 치환, 제목은 로케일별 정형 유지)
   └─ 기존 카운터(suspicious_count, days_inactive) 변경하지 않음
 ```
 
@@ -593,7 +595,8 @@ Body:
     "longitude": 126.9780,         // -180.0 ~ 180.0
     "accuracy_meters": 12.5,       // optional, ge=0
     "captured_at": "2026-04-19T14:32:00+09:00"  // optional, ISO 8601
-  }
+  },
+  "message": "가슴이 아파요"        // optional, max_length=100 — 대상자가 다이얼로그에 직접 입력한 선택 메시지
 }
 Response: 200 OK
 {
@@ -607,10 +610,11 @@ Response: 200 OK
 - 즉시 urgent 등급 경고 생성 (caution→warning→urgent 단계를 거치지 않음)
 - `alerts` 테이블에 `alert_level='urgent'`, `note='emergency_request'`로 저장 (위치 저장 안 함 — alerts는 활성 상태 추적 전용)
 - `notification_events` 테이블에 `message_key='emergency'`로 저장. `location` 필드 첨부 시 `location_lat/lng/accuracy/captured_at` 컬럼에 같이 기록 (모두 nullable, 권한 거부/GPS 실패 시 생략 가능)
+- **`message` 필드 처리 (방식 A — 대상자 육성 그대로)**: 서버가 공백 정규화(공백만이면 없는 것으로 간주) 후, 값이 있으면 `notification_events.message_params`에 `{"note": "<원문>"}`로 저장하고 **보호자 긴급 Push 본문(`body`)을 대상자 원문으로 치환**한다. 제목(`push_emergency_title`)은 로케일별 정형 문구를 유지하므로 긴급 상황임은 그대로 전달된다. 자유 입력 원문이므로 번역하지 않고 대상자가 쓴 언어 그대로 전 보호자에게 발송. 미입력 시 `message_params`는 NULL, Push 본문은 로케일별 `push_emergency_body`. `message_params.note`는 보호자 앱 알림 목록 카드에서도 원문으로 렌더링(위치와 별개, `DB 마이그레이션 불필요` — 기존 `message_params` JSON 컬럼 재사용)
 - 연결된 보호자 전원에게 긴급 Push 발송 (DND 무시, `asyncio.gather` 병렬). FCM `data` 필드에 `lat`/`lng`/`accuracy` 값이 있을 때만 문자열로 포함 — 보호자 앱이 이 값으로 지도 페이지 라우팅
 - 보호자 구독 만료와 무관하게 항상 발송
 - 클라이언트에서 확인 다이얼로그를 표시하여 오탐 방지
-- 위치 프라이버시: 정기 heartbeat에는 수집하지 않으며, 저장 범위는 `notification_events` 1곳, 보관 기간은 최대 24시간 (자정 정리 스케줄러가 삭제)
+- 위치·메시지 프라이버시: 정기 heartbeat에는 수집하지 않으며, 저장 범위는 `notification_events` 1곳, 보관 기간은 최대 24시간 (자정 정리 스케줄러가 삭제). 메시지는 대상자 **본인의 자발적 자기 진술**이며 서버가 능동 수집하는 개인정보가 아님
 
 
 ### 4.8 구독 상태 확인 (보호자용) 
@@ -2028,7 +2032,7 @@ CMD ["python", "main.py"]
 | `/api/v1/app/version-check` | GET | 앱 버전 체크 (강제 업데이트 판정) |
 | `/api/v1/admin/app-version` | PUT | 앱 버전 설정 (Admin, Postman용) |
 | `/api/v1/admin/app-version` | GET | 앱 버전 설정 조회 (Admin, Postman용) |
-| `/api/v1/emergency` | POST | 긴급 도움 요청 (대상자 → 보호자 전원 즉시 urgent Push, 에스컬레이션 독립. body.location optional: lat/lng/accuracy/captured_at 첨부 시 `notification_events`에 저장 + FCM data에 포함) |
+| `/api/v1/emergency` | POST | 긴급 도움 요청 (대상자 → 보호자 전원 즉시 urgent Push, 에스컬레이션 독립. body.location optional: lat/lng/accuracy/captured_at 첨부 시 `notification_events`에 저장 + FCM data에 포함. body.message optional(max 100): `message_params.note` 저장 + Push 본문을 대상자 원문으로 치환) |
 | `/api/v1/iap/google-notifications` | POST | Google Play RTDN 수신 (Pub/Sub Push OIDC JWT 인증, device_token 미사용) |
 | `/api/v1/iap/apple-notifications` | POST | Apple S2S Notifications V2 수신 (JWS 서명 검증, device_token 미사용) |
 | `/health` | GET | 헬스체크 |
