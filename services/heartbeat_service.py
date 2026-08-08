@@ -44,10 +44,15 @@ async def _save_notification_event(
 
 
 async def _get_active_guardians(db: asyncpg.Connection, subject_user_id: int) -> list:
-    """구독 활성 보호자 목록 조회 (fcm_token + locale 포함)"""
+    """구독 활성 보호자 목록 조회 (fcm_token + locale + alias 포함)
+
+    alias는 보호자마다 다르다(같은 대상자를 A는 "삼촌", B는 "아버지"로 부름).
+    따라서 push_fn 람다는 대상자 단위로 한 번만 만들어지므로 alias를 클로저에
+    묶을 수 없고, _push_to_guardians가 보호자 루프 안에서 넘겨야 한다.
+    """
     return await db.fetch(
         """SELECT DISTINCT ON (g.guardian_user_id)
-                  g.guardian_user_id, d.fcm_token, d.locale
+                  g.guardian_user_id, g.alias, d.fcm_token, d.locale
            FROM guardians g
            JOIN subscriptions s ON s.user_id = g.guardian_user_id
            JOIN devices d ON d.user_id = g.guardian_user_id
@@ -74,7 +79,12 @@ async def _push_to_guardians(
     push_fn,
 ) -> None:
     """보호자별 settings 확인 후 Push 전송 (DB 저장 없음)
-    push_fn은 (fcm_token, locale) → coroutine 형태"""
+    push_fn은 (fcm_token, locale, alias) → coroutine 형태
+
+    alias(보호자가 대상자에게 붙인 별칭)를 seam으로 넘기는 이유: push_fn 람다는
+    호출부에서 대상자 단위로 한 번만 만들어지는데 alias는 보호자마다 다르므로,
+    람다 클로저에 묶을 수 없고 이 루프 안에서 건네야 한다.
+    """
     coros = []
     for g in guardians:
         settings = await get_guardian_settings(db, g["guardian_user_id"])
@@ -82,7 +92,7 @@ async def _push_to_guardians(
             continue
         if should_push(settings, level):
             locale = g.get("locale") or "ko_KR"
-            coros.append(push_fn(g["fcm_token"], locale))
+            coros.append(push_fn(g["fcm_token"], locale, g.get("alias")))
     if coros:
         await asyncio.gather(*coros, return_exceptions=True)
 
@@ -224,7 +234,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             )
             await _push_to_guardians(
                 db, guardians, "caution",
-                lambda token, locale: push_service.push_caution(token, user_id, invite_code=invite_code, reason="suspicious", locale=locale),
+                lambda token, locale, alias: push_service.push_caution(token, user_id, invite_code=invite_code, reason="suspicious", locale=locale, alias=alias),
             )
         elif new_suspicious_count == 2:
             # 2회 → 경고(warning) 등급 (suspicious 전용 문구)
@@ -238,7 +248,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             )
             await _push_to_guardians(
                 db, guardians, "warning",
-                lambda token, locale: push_service.push_warning(token, user_id, invite_code=invite_code, reason="suspicious", locale=locale),
+                lambda token, locale, alias: push_service.push_warning(token, user_id, invite_code=invite_code, reason="suspicious", locale=locale, alias=alias),
             )
         elif new_suspicious_count >= 3:
             # 3회 이상 → 긴급(urgent) 등급 (suspicious 전용 문구)
@@ -254,7 +264,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             )
             await _push_to_guardians(
                 db, guardians, "urgent",
-                lambda token, locale, d=days: push_service.push_urgent(token, user_id, days=d, invite_code=invite_code, reason="suspicious", locale=locale),
+                lambda token, locale, alias, d=days: push_service.push_urgent(token, user_id, days=d, invite_code=invite_code, reason="suspicious", locale=locale, alias=alias),
             )
 
     # 배터리 < 20% → 보호자 정보 알림
@@ -309,7 +319,7 @@ async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -
     )
     await _push_to_guardians(
         db, guardians, "info",
-        lambda token, locale: push_service.push_battery_low(token, user_id, invite_code=invite_code, locale=locale),
+        lambda token, locale, alias: push_service.push_battery_low(token, user_id, invite_code=invite_code, locale=locale, alias=alias),
     )
 
 
@@ -327,7 +337,7 @@ async def _send_auto_report_to_guardians(db: asyncpg.Connection, user_id: int) -
     )
     await _push_to_guardians(
         db, guardians, "info",
-        lambda token, locale: push_service.push_auto_report(token, user_id, invite_code=invite_code, locale=locale),
+        lambda token, locale, alias: push_service.push_auto_report(token, user_id, invite_code=invite_code, locale=locale, alias=alias),
     )
 
 
@@ -345,5 +355,5 @@ async def _send_manual_report_to_guardians(db: asyncpg.Connection, user_id: int)
     )
     await _push_to_guardians(
         db, guardians, "info",
-        lambda token, locale: push_service.push_manual_report(token, user_id, invite_code=invite_code, locale=locale),
+        lambda token, locale, alias: push_service.push_manual_report(token, user_id, invite_code=invite_code, locale=locale, alias=alias),
     )

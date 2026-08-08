@@ -6,9 +6,10 @@ from middleware.auth import require_guardian
 from middleware import rate_limit
 from models.guardian import (
     SubjectLinkIn, SubjectLinkOut, SubjectListOut, SubjectOut, AlertSummary, StepHistoryOut,
+    SubjectAliasSyncIn,
 )
 from services.subject_service import (
-    link_subject, get_subjects, unlink_subject, get_step_history_for_subject,
+    link_subject, get_subjects, unlink_subject, get_step_history_for_subject, sync_aliases,
 )
 from config import LINK_RATE_LIMIT
 
@@ -69,6 +70,22 @@ async def list_subjects(
         can_add_more=result["can_add_more"],
         subscription_active=result["subscription_active"],
     )
+
+
+@router.put("/aliases")
+async def put_aliases(
+    body: SubjectAliasSyncIn,
+    user: dict = Depends(require_guardian),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    """대상자 별칭 동기화 — 보호자 Push 제목에 "누구의 알림인지"를 표시하기 위함.
+
+    개별 저장(1개짜리 맵)과 앱 업데이트 후 백필(맵 전체)이 같은 경로를 쓴다.
+    별칭이 없으면 Push는 기존 정형 문구 그대로 나가므로, 이 호출이 실패해도
+    앱 기능에는 영향이 없다(클라는 fire-and-forget으로 호출한다).
+    """
+    updated = await sync_aliases(db, user["user_id"], body.aliases)
+    return {"updated": updated}
 
 
 @router.delete("/{guardian_id}/unlink")

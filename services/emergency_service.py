@@ -91,6 +91,9 @@ async def process_emergency(
                     invite_code=invite_code, locale=locale,
                     lat=loc_lat, lng=loc_lng, accuracy=loc_acc,
                     message=note,
+                    # 이 경로는 _push_to_guardians를 쓰지 않고 직접 순회하므로
+                    # alias를 여기서 직접 넘겨야 한다 (누락 시 제목에 별칭 미표시)
+                    alias=g.get("alias"),
                 )
             )
         if coros:

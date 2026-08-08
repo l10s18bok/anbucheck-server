@@ -6,6 +6,16 @@ class SubjectLinkIn(BaseModel):
     invite_code: str = Field(..., min_length=1, max_length=64)
 
 
+class SubjectAliasSyncIn(BaseModel):
+    """보호자가 대상자에게 붙인 별칭 동기화 (invite_code → 별칭).
+
+    개별 저장(1개짜리 맵)과 앱 업데이트 후 1회 백필(맵 전체)이 같은 엔드포인트를
+    쓴다. 요청한 보호자의 연결 행만 갱신하므로 멱등하다.
+    max_subjects 상한이 5명이라 여유를 둔 20개로 제한한다.
+    """
+    aliases: dict[str, str] = Field(..., max_length=20)
+
+
 class AlertSummary(BaseModel):
     id: int
     days_inactive: int

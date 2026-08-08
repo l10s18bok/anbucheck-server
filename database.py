@@ -132,12 +132,21 @@ CREATE TABLE IF NOT EXISTS guardians (
     id                  SERIAL PRIMARY KEY,
     subject_user_id     INTEGER NOT NULL REFERENCES users(id),
     guardian_user_id    INTEGER NOT NULL REFERENCES users(id),
+    alias               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(subject_user_id, guardian_user_id)
 )
 """)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_guardians_subject ON guardians (subject_user_id)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_guardians_guardian ON guardians (guardian_user_id)")
+
+    # alias 컬럼 마이그레이션 (기존 DB 대응) — 보호자가 대상자에게 붙인 별칭.
+    # 보호자별로 다른 값이며(같은 대상자를 A는 "삼촌", B는 "아버지"로 부름),
+    # 보호자 Push 제목에 "누구의 알림인지"를 표시하는 용도로만 쓴다.
+    # NULL이면 기존과 동일하게 정형 문구만 표시되므로 미동기화 기기도 무해하다.
+    await conn.execute("""
+ALTER TABLE guardians ADD COLUMN IF NOT EXISTS alias TEXT
+""")
 
     await conn.execute("""
 CREATE TABLE IF NOT EXISTS subscriptions (

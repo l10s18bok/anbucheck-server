@@ -128,7 +128,7 @@ async def disable_subject(
 
     # 나를 보호하는 보호자에게 Push 알림
     guardians = await db.fetch(
-        """SELECT DISTINCT ON (g.guardian_user_id) d.fcm_token, d.locale FROM guardians g
+        """SELECT DISTINCT ON (g.guardian_user_id) g.alias, d.fcm_token, d.locale FROM guardians g
            JOIN devices d ON d.user_id = g.guardian_user_id
            WHERE g.subject_user_id = $1 AND d.fcm_token IS NOT NULL AND d.fcm_token != ''
            ORDER BY g.guardian_user_id, d.updated_at DESC""",
@@ -138,7 +138,10 @@ async def disable_subject(
         coros = [
             push_service.send_push(
                 g["fcm_token"],
-                get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_title"),
+                push_service.decorate_title(
+                    get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_title"),
+                    g.get("alias"),
+                ),
                 get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_body", invite_code=invite_code),
                 data={"type": "subject_withdrawn", "invite_code": invite_code},
             )
@@ -242,16 +245,25 @@ async def delete_me(
     if has_invite_code:
         invite_code = invite_row["invite_code"]
         guardians = await db.fetch(
-            """SELECT d.fcm_token, d.locale FROM guardians g
+            # DISTINCT ON — 보호자 1명당 가장 최근 갱신된 devices 1건으로만 발송.
+            # 기기 교체 등으로 devices 행이 여러 개면 단순 JOIN은 같은 보호자에게
+            # 탈퇴 Push를 N회 보낸다 (PRD-BackEnd §6.7 불변 규칙).
+            # 바로 위 disable_subject의 동일 목적 쿼리와 형태를 맞춘 것.
+            """SELECT DISTINCT ON (g.guardian_user_id) g.alias, d.fcm_token, d.locale
+               FROM guardians g
                JOIN devices d ON d.user_id = g.guardian_user_id
-               WHERE g.subject_user_id = $1 AND d.fcm_token IS NOT NULL AND d.fcm_token != ''""",
+               WHERE g.subject_user_id = $1 AND d.fcm_token IS NOT NULL AND d.fcm_token != ''
+               ORDER BY g.guardian_user_id, d.updated_at DESC""",
             user_id,
         )
         if guardians:
             coros = [
                 push_service.send_push(
                     g["fcm_token"],
-                    get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_title"),
+                    push_service.decorate_title(
+                        get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_title"),
+                        g.get("alias"),
+                    ),
                     get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_body", invite_code=invite_code),
                     data={"type": "subject_withdrawn", "invite_code": invite_code},
                 )

@@ -196,8 +196,8 @@ async def clear_all_alerts(
         if other_guardians:
             await _push_to_guardians(
                 db, other_guardians, "info",
-                lambda token, locale: push_service.push_alert_cleared(
-                    token, subject_user_id, invite_code=invite_code, locale=locale,
+                lambda token, locale, alias: push_service.push_alert_cleared(
+                    token, subject_user_id, invite_code=invite_code, locale=locale, alias=alias,
                 ),
             )
 
@@ -255,7 +255,7 @@ async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int, in
     )
     await _push_to_guardians(
         db, guardians, "info",
-        lambda token, locale: push_service.push_resolved(token, subject_user_id, invite_code=invite_code, locale=locale),
+        lambda token, locale, alias: push_service.push_resolved(token, subject_user_id, invite_code=invite_code, locale=locale, alias=alias),
     )
 
     return resolved_levels

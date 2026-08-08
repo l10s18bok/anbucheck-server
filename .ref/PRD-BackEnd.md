@@ -36,8 +36,8 @@
 ### 1.4 개인정보 보호 원칙
 - 서버에 **이름, 전화번호 등 개인정보를 일절 저장하지 않음**
 - 대상자-보호자 연결은 서버가 발급한 **고유 코드(invite_code)**로 매칭
-- DB가 유출되어도 개인 식별 불가 (device_id, invite_code만 존재)
-- 보호자가 대상자를 식별하기 위한 별칭은 클라이언트 로컬에만 저장
+- DB가 유출되어도 개인 식별 불가 (device_id, invite_code, 보호자가 붙인 별칭만 존재)
+- 보호자가 대상자를 식별하기 위한 별칭은 **클라이언트 로컬이 원본**이며, 서버에는 **Push 제목 렌더링용 사본**을 보관한다(`guardians.alias`, §4.4.1). 알림 트레이에 "⚠ 주의 · 삼촌"처럼 누구의 알림인지 표시하려면 앱이 꺼져 있어도 OS가 그리는 제목에 이름이 들어가야 하고, 그 제목은 서버만 만들 수 있기 때문이다. 이는 **대상자의 실명이 아니라 보호자가 스스로 붙인 호칭**이고, 저장한 그 보호자에게만 되돌려 보내진다(다른 보호자·대상자에게 노출되지 않음)
 - **위치정보는 정기 heartbeat에서 수집하지 않음.** 대상자가 `POST /api/v1/emergency` 호출 시 사용자 동의 하에 lat/lng/accuracy를 1회 첨부할 수 있으며, 서버는 `notification_events` 테이블에만 저장하고 대상자 기기 타임존 자정 스케줄러가 다른 알림과 함께 일괄 삭제 (§4.7 / §6.4 참조). 긴급 요청 시 대상자가 다이얼로그에 직접 입력한 선택 메시지(`message`, 최대 100자)도 동일 정책 — `notification_events.message_params.note`에만 저장, 자정 정리 시 삭제, 미입력 시 없음 (자유 입력이므로 대상자 본인의 자발적 자기 진술)
 
 
@@ -280,8 +280,9 @@ heartbeat 수신 → last_seen 갱신
   "data": { "type": "alert_resolved", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
 }
 ```
-- 서버에 이름이 없으므로 Push 본문에 "대상자"로 표시
-- 보호자 앱이 Push 수신 시 로컬 별칭으로 치환하여 표시 가능
+- 서버에 실명이 없으므로 Push **본문**은 "대상자"로 표시
+- Push **제목**에는 보호자가 붙인 별칭이 붙는다 — `"⚠ 주의" → "⚠ 주의 · 삼촌"` (`push_service.decorate_title`, §6.7). 별칭이 없으면(미동기화·구버전 앱) 제목도 정형 문구 그대로라 하위호환이 유지된다
+- 앱 내 화면(대시보드·알림 목록)은 여전히 **로컬 별칭**으로 표시한다 — 서버 사본은 Push 제목 렌더링 전용이며 `/subjects` 응답에는 포함되지 않는다
 
 
 ---
@@ -465,7 +466,7 @@ Response: 200 OK
 - `heartbeat_hour`, `heartbeat_minute`: 대상자의 heartbeat 예약 시각
 - `battery_level`: 마지막 heartbeat 시 배터리 잔량 (0~100, 없으면 `null`)
 - `weekly_steps`: 대상자 로컬 타임존 기준 최근 7일 일별 최대 걸음수 배열 (index 0 = 6일 전, 마지막 = 오늘). `users.created_at` 이전 날짜는 `null`(등록 전), 이후 heartbeat 없는 날은 `0`
-- 이름 없음 — 클라이언트가 로컬 별칭과 `invite_code`를 매칭하여 표시
+- 이름 없음 — 클라이언트가 로컬 별칭과 `invite_code`를 매칭하여 표시. **`guardians.alias`(§4.4.1)를 응답에 포함하지 않는 것은 의도**다 — 별칭의 원본은 클라 로컬이고 서버 사본은 Push 제목 렌더링 전용이라, 응답에 내려주면 "어느 쪽이 원본인가"가 모호해진다. 재설치 시 별칭 복원 기능이 필요해지면 그때 별도 설계로 열 것
 
 **`weekly_steps` / 30일 걸음수 이력 타임존 처리 (`subject_service.get_step_history`)**:
 - `devices.timezone`(IANA 문자열)을 Python `ZoneInfo`로 파싱해 대상자 현지 자정을 기준으로 날짜 경계(`start_utc`, `end_utc`)를 계산한다.
@@ -473,6 +474,27 @@ Response: 200 OK
 - **legacy alias 처리**: Android `flutter_timezone`은 "US/Pacific", "Japan", "ROK", "PRC", "Brazil/East" 등 legacy IANA alias를 반환할 수 있다. `python:3.12-slim`에 `tzdata` 패키지를 설치(`requirements.txt`)해 `ZoneInfo(alias)` 호출이 성공하도록 한다. 파싱 실패 시 `except Exception`으로 `ZoneInfo("Asia/Seoul")` 폴백.
 - ⚠️ `AT TIME ZONE`과 Python `ZoneInfo`를 혼용하면 안 된다: Railway PostgreSQL의 pg_timezone_names에는 legacy alias가 없어 SQL은 폴백(Seoul)으로, Python은 tzdata로 정확한 alias를 인식하면 날짜 키가 달라져 걸음수 차트가 하루 밀린다. 버킷팅은 반드시 Python 단독으로 처리할 것.
 
+
+### 4.4.1 대상자 별칭 동기화 (보호자용)
+```
+PUT /api/v1/subjects/aliases
+Headers:
+  Authorization: Bearer <device_token>
+Body:
+{
+  "aliases": { "K7M-4PXR": "삼촌", "A2B-9XYZ": "어머니" }
+}
+Response: 200 OK
+{ "updated": 2 }
+```
+
+보호자 Push 제목에 **"누구의 알림인지"**를 표시하기 위해 서버가 별칭을 알아야 한다. 별칭의 **원본은 보호자 앱 로컬**이고 서버는 렌더링용 사본만 보관한다.
+
+- **개별 저장(1개짜리 맵)과 앱 업데이트 후 백필(맵 전체)이 같은 경로**를 쓴다. 요청한 보호자 본인의 `guardians` 행만 갱신하므로 남의 별칭을 덮어쓸 수 없고, 같은 요청을 반복해도 결과가 같다(멱등).
+- 모르는 `invite_code`나 이미 연결이 끊긴 항목은 **조용히 무시**한다 — 백필은 클라의 로컬 맵을 통째로 올리므로 해제된 대상자가 섞여 있을 수 있고, 그것 때문에 전체 동기화가 실패하면 안 된다.
+- 맵 크기는 20개로 제한(`max_subjects` 기본 5의 여유분).
+- 저장 시 `sanitize_alias`로 제어문자·개행 제거 + 연속 공백 축약 + **20자 절단**. 빈 값이 되면 NULL로 저장 → 정형 문구 폴백.
+- 클라이언트는 **fire-and-forget**으로 호출한다. 실패해도 Push가 기존 정형 문구로 나갈 뿐 앱 기능에는 영향이 없다.
 
 ### 4.5 대상자 연결 해제 (보호자용)
 ```
@@ -1327,6 +1349,11 @@ CREATE TABLE IF NOT EXISTS guardians (
     id                  SERIAL PRIMARY KEY,
     subject_user_id     INTEGER NOT NULL REFERENCES users(id),
     guardian_user_id    INTEGER NOT NULL REFERENCES users(id),
+    alias               TEXT,
+                        -- 보호자가 대상자에게 붙인 별칭 ("삼촌"). 보호자별로 다른 값.
+                        -- Push 제목에 "누구의 알림인지"를 표시하는 용도로만 쓴다.
+                        -- 원본은 보호자 앱 로컬이며 서버는 렌더링용 사본을 보관한다.
+                        -- NULL이면 정형 문구만 표시 → 미동기화 기기도 무해.
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(subject_user_id, guardian_user_id)
 );
@@ -1659,7 +1686,7 @@ heartbeat 수신·경고 발송·긴급 도움 요청·대상자 탈퇴 Push 등
 
 ```sql
 SELECT DISTINCT ON (g.guardian_user_id)
-       g.guardian_user_id, d.fcm_token, d.locale
+       g.guardian_user_id, g.alias, d.fcm_token, d.locale
 FROM guardians g
 JOIN subscriptions s ON s.user_id = g.guardian_user_id
 JOIN devices d ON d.user_id = g.guardian_user_id
@@ -1674,9 +1701,49 @@ ORDER BY g.guardian_user_id, d.updated_at DESC;
 **배경:** `guardians` 테이블에는 `UNIQUE(subject_user_id, guardian_user_id)` 제약이 걸려 있어 보호자-대상자 매핑은 1행으로 유일하나, `devices` 테이블에는 동일 `user_id`에 대해 여러 행이 남아있을 수 있다 (OS/기기 교체, orphan 레코드 등). 단순 JOIN 시 보호자당 N행이 반환되어 **같은 보호자에게 Push가 N회 발송**되는 이슈가 발생하므로 `DISTINCT ON` + `updated_at DESC`로 최신 토큰 1건만 선택한다.
 
 **적용 대상 쿼리 (예시):**
-- `services/heartbeat_service.py::_get_active_guardians` — heartbeat 정상/suspicious 판정 시 보호자 Push (emergency_service도 이 함수를 재사용)
-- `services/alert_service.py::send_alert_to_guardians` — 정보/주의/경고/긴급/배터리 Push
-- `routers/user.py::delete_me` — 대상자 탈퇴 Push (2곳)
+- `services/heartbeat_service.py::_get_active_guardians` — 보호자 조회의 단일 통로. `alert_service` / `scheduler` / `emergency_service`가 모두 이 함수를 재사용한다
+- `routers/user.py::delete_me`·`disable_subject` — 대상자 탈퇴 Push (2곳, 자체 쿼리)
+
+⚠️ **이 문서가 "적용됨"이라고 적어둔 것과 코드가 어긋난 전례가 있다** — `delete_me`의 쿼리에 `DISTINCT ON`이 빠진 채로 오래 남아, 기기를 교체한 보호자가 탈퇴 Push를 기기 수만큼 중복 수신하고 죽은 구형 토큰으로도 발송되고 있었다(2026-08-08 수정, 실 DB로 3건→1건 재현·검증). 목록을 믿지 말고 아래로 실제 쿼리를 훑을 것 — `FROM guardians g`에 `devices`를 JOIN해 `fcm_token`을 뽑는데 `DISTINCT ON`이 없으면 중복 발송이다(EXISTS 검사·대상자 목록 조회는 해당 없음):
+
+```bash
+grep -rn -A4 "FROM guardians g" services/ routers/ | grep -B1 -A3 "JOIN devices" | grep -L "DISTINCT ON"
+# 또는 육안 확인:
+grep -rn -B3 -A5 "JOIN devices d ON d.user_id = g.guardian_user_id" services/ routers/
+```
+
+⚠️ **`emergency_service`는 `_get_active_guardians`로 보호자를 조회하지만 `_push_to_guardians`는 쓰지 않고 직접 순회**한다(DND 무시 로직이 달라서). 따라서 seam을 바꿀 때 이 경로가 AST 검사에 걸리지 않으므로 **별도로 확인**해야 한다. 아래 grep으로 "람다 밖에서 `push_*`를 직접 부르는 곳"을 함께 훑을 것:
+
+```bash
+grep -rnE "push_(caution|warning|urgent|urgent_secondary|resolved|auto_report|manual_report|battery_low|battery_dead|alert_cleared|emergency)\(" services/ routers/ \
+  | grep -v "^services/push_service.py" | grep -v "lambda token, locale, alias"
+```
+
+**⚠ alias(대상자 별칭)를 seam으로 넘기는 이유 — 합치지 말 것:**
+
+`_push_to_guardians(db, guardians, level, push_fn)`의 `push_fn` 계약은 **`(fcm_token, locale, alias) → coroutine`**이다. `alias`를 호출부 람다의 클로저에 묶으면 안 된다 — 람다는 **대상자 단위로 한 번** 만들어지는데 `alias`는 **보호자마다 다르기** 때문이다(같은 대상자를 A는 "삼촌", B는 "아버지"로 부름). 반드시 `_push_to_guardians`의 보호자 루프 안에서 `g.get("alias")`로 건네야 한다.
+
+계약을 바꾸면 **모든 호출부 람다를 빠짐없이** 함께 고쳐야 한다(현재 13곳). 파이썬이라 누락은 런타임 `TypeError`로만 드러나므로, 배포 전 아래 AST 검사로 확인한다 — 람다 인자가 `(token, locale, alias)`인지 + 내부 `push_*` 호출에 `alias=`가 전달되는지.
+
+```bash
+python3 -c "
+import ast, pathlib
+bad, ok = [], 0
+for f in list(pathlib.Path('services').glob('*.py')) + list(pathlib.Path('routers').glob('*.py')):
+    for n in ast.walk(ast.parse(f.read_text())):
+        if not (isinstance(n, ast.Call) and getattr(n.func, 'attr', getattr(n.func, 'id', None)) == '_push_to_guardians'): continue
+        lam = next((a for a in n.args if isinstance(a, ast.Lambda)), None)
+        names = [a.arg for a in lam.args.args] if lam else []
+        if names[:3] != ['token','locale','alias'] or 'alias' not in [k.arg for k in lam.body.keywords]:
+            bad.append(f'{f}:{n.lineno}')
+        else: ok += 1
+print(f'통과 {ok}건'); [print(' ✗', b) for b in bad]
+"
+```
+
+**Push 제목 렌더링**: `push_service.decorate_title(title, alias)`가 `"⚠ 주의" → "⚠ 주의 · 삼촌"`처럼 **뒤에** 덧붙인다(앞이 아니라 뒤인 이유: 제목이 짧은 등급 라벨이라 트레이에서 한 줄로 잘려도 등급이 먼저 읽혀야 한다). 이 함수는 모든 보호자 알림이 지나는 단일 통로 앞단이므로 **어떤 입력에도 예외를 던지지 않는다** — `alias`가 NULL·빈 문자열·비문자열이면 원본 제목을 그대로 반환한다. 여기서 예외가 나면 경고·긴급 Push 전체가 죽는다.
+
+**alias 미적용 대상(의도)**: `push_subject_safety_net`(대상자 본인에게 감), `push_subscription_expired`·`push_subscription_grace_period`(특정 대상자와 무관). 대칭성을 이유로 붙이지 말 것.
 
 신규로 보호자 전원에게 Push를 보내는 쿼리를 추가할 때도 동일 규칙을 적용한다.
 
@@ -2015,6 +2082,7 @@ CMD ["python", "main.py"]
 | `/api/v1/heartbeat` | POST | 안부 확인 heartbeat 수신 |
 | `/api/v1/subjects/link` | POST | 고유 코드로 대상자 연결 (보호자용) |
 | `/api/v1/subjects` | GET | 연결된 대상자 목록 조회 (보호자용) |
+| `/api/v1/subjects/aliases` | PUT | 대상자 별칭 동기화 (보호자용, Push 제목 표시용) |
 | `/api/v1/subjects/{id}/unlink` | DELETE | 대상자 연결 해제 (보호자용) |
 | `/api/v1/subscription` | GET | 구독 상태 확인 |
 | `/api/v1/subscription/verify` | POST | 인앱 결제 영수증 검증 |

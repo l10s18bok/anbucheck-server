@@ -143,6 +143,55 @@ async def get_subjects(db: asyncpg.Connection, guardian_user_id: int) -> dict:
     }
 
 
+ALIAS_MAX_LEN = 20
+
+
+def sanitize_alias(raw: str | None) -> str | None:
+    """별칭 정규화 — 제어문자·개행 제거, 연속 공백 축약, 20자 절단.
+
+    Push 제목에 그대로 실리는 값이라 저장 시점에 한 번 걸러둔다
+    (렌더링 시점의 push_service.decorate_title이 이중 방어).
+    빈 값이 되면 None을 반환해 DB에 NULL로 남긴다 → 정형 문구 폴백.
+    """
+    if not isinstance(raw, str):
+        return None
+    cleaned = " ".join("".join(c for c in raw if c.isprintable()).split())
+    return cleaned[:ALIAS_MAX_LEN] or None
+
+
+async def sync_aliases(
+    db: asyncpg.Connection, guardian_user_id: int, aliases: dict[str, str]
+) -> int:
+    """보호자가 붙인 별칭을 guardians.alias에 반영 (invite_code → 별칭).
+
+    개별 저장(1건)과 앱 업데이트 후 백필(전체)이 같은 경로를 쓴다. 요청한
+    보호자 본인의 연결 행만 갱신하므로 남의 별칭을 덮어쓸 수 없고, 같은 요청을
+    여러 번 보내도 결과가 같다(멱등).
+
+    모르는 invite_code나 연결이 끊긴 항목은 조용히 무시한다 — 백필은 클라의
+    로컬 맵을 통째로 올리는 방식이라 이미 해제된 대상자가 섞여 있을 수 있고,
+    그것 때문에 전체 동기화가 실패하면 안 된다.
+    """
+    updated = 0
+    for invite_code, raw_alias in aliases.items():
+        code = (invite_code or "").strip().upper()
+        if not code:
+            continue
+        result = await db.execute(
+            """UPDATE guardians g
+               SET alias = $1
+               FROM users u
+               WHERE g.subject_user_id = u.id
+                 AND g.guardian_user_id = $2
+                 AND u.invite_code = $3""",
+            sanitize_alias(raw_alias), guardian_user_id, code,
+        )
+        # asyncpg의 execute는 "UPDATE n" 형태 문자열을 반환한다.
+        if result.rsplit(" ", 1)[-1].isdigit():
+            updated += int(result.rsplit(" ", 1)[-1])
+    return updated
+
+
 async def unlink_subject(db: asyncpg.Connection, guardian_id: int, guardian_user_id: int) -> None:
     row = await db.fetchrow(
         "SELECT id, subject_user_id FROM guardians WHERE id = $1 AND guardian_user_id = $2",

@@ -135,7 +135,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
             )
             await _push_to_guardians(
                 db, guardians, "info",
-                lambda token, locale: push_battery_dead(token, user_id, battery_level, invite_code=invite_code, locale=locale),
+                lambda token, locale, alias: push_battery_dead(token, user_id, battery_level, invite_code=invite_code, locale=locale, alias=alias),
             )
         return
 
@@ -159,7 +159,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
         )
         await _push_to_guardians(
             db, guardians, "urgent",
-            lambda token, locale: push_urgent(token, user_id, days=3, invite_code=invite_code, locale=locale),
+            lambda token, locale, alias: push_urgent(token, user_id, days=3, invite_code=invite_code, locale=locale, alias=alias),
         )
 
     elif has_caution:
@@ -173,7 +173,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
         )
         await _push_to_guardians(
             db, guardians, "warning",
-            lambda token, locale: push_warning(token, user_id, invite_code=invite_code, locale=locale),
+            lambda token, locale, alias: push_warning(token, user_id, invite_code=invite_code, locale=locale, alias=alias),
         )
 
     else:
@@ -187,7 +187,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
         )
         await _push_to_guardians(
             db, guardians, "caution",
-            lambda token, locale: push_caution(token, user_id, invite_code=invite_code, locale=locale),
+            lambda token, locale, alias: push_caution(token, user_id, invite_code=invite_code, locale=locale, alias=alias),
         )
 
 
@@ -221,7 +221,7 @@ async def _escalate_urgent_if_needed(
     if push_count <= 5:
         await _push_to_guardians(
             db, guardians, "urgent",
-            lambda token, locale, d=days: push_urgent_secondary(token, user_id, days=d, invite_code=invite_code, locale=locale),
+            lambda token, locale, alias, d=days: push_urgent_secondary(token, user_id, days=d, invite_code=invite_code, locale=locale, alias=alias),
         )
 
 
