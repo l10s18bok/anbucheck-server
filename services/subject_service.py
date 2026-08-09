@@ -4,6 +4,8 @@ from zoneinfo import ZoneInfo
 import asyncpg
 from fastapi import HTTPException, status
 
+from services.heartbeat_keys import log_local_date as _log_local_date
+
 
 async def get_max_subjects(db: asyncpg.Connection, guardian_user_id: int) -> int:
     """보호자별 최대 대상자 등록 인원 조회 (users.max_subjects, 기본 5).
@@ -235,6 +237,13 @@ async def get_step_history(
     · users.created_at 이전 날짜 → None (등록 전, 빈 막대)
     · 이후인데 heartbeat 없음 → 0
     · heartbeat 존재 → 당일 MAX(steps_delta). steps_delta는 자정 누적값이므로 MAX가 일별 총 걸음수
+
+    **일자 귀속은 도착 시각(server_ts)이 아니라 그 기록이 원래 속한 날짜**(scheduled_key)로
+    한다. 통신 장애로 n일 heartbeat가 보류 큐에 남았다가 n+1일에 뒤늦게 전송되면 server_ts는
+    n+1일이지만 걸음수는 n일 것이므로, server_ts로 묶으면 n일 막대가 0이 되고 n+1일 막대에
+    남의 값이 들어간다. scheduled_key는 기기 로컬 날짜를 담고 있어 이 오배정을 교정하며,
+    이미 저장된 과거 기록에도 소급 적용된다(읽기 시점 재분류이므로 마이그레이션 불필요).
+    수동 보고는 scheduled_key가 NULL이므로 server_ts로 폴백한다.
     """
     if not device_id:
         return [None] * days
@@ -248,11 +257,14 @@ async def get_step_history(
     start_date = today - timedelta(days=days - 1)
     created_date = user_created_at.astimezone(tz).date()
 
-    start_utc = datetime.combine(start_date, datetime.min.time(), tz)
+    # 조회 범위는 창 시작보다 하루 앞에서 뜬다 — 창 첫날에 속한 기록이 그 다음 날 뒤늦게
+    # 도착했을 수 있고(server_ts가 창 안), 반대로 창 시작 직전에 도착한 기록이 창 첫날에
+    # 귀속될 수도 있다(타임존 경계·시계 오차). 재분류 후 창 밖 날짜는 아래 루프에서 버려진다.
+    start_utc = datetime.combine(start_date - timedelta(days=1), datetime.min.time(), tz)
     end_utc = datetime.combine(today + timedelta(days=1), datetime.min.time(), tz)
 
     rows = await db.fetch(
-        """SELECT server_ts, steps_delta
+        """SELECT server_ts, steps_delta, scheduled_key
            FROM heartbeat_logs
            WHERE device_id = $1 AND server_ts >= $2 AND server_ts < $3""",
         device_id,
@@ -261,7 +273,7 @@ async def get_step_history(
     )
     day_map: dict = {}
     for row in rows:
-        local_date = row["server_ts"].astimezone(tz).date()
+        local_date = _log_local_date(row["scheduled_key"], row["server_ts"], tz)
         steps = row["steps_delta"] if row["steps_delta"] is not None else 0
         if steps > day_map.get(local_date, 0):
             day_map[local_date] = steps

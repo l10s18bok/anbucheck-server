@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from i18n.messages import get_message
 from services import alert_service, push_service
 from services.alert_service import get_guardian_settings, should_send, should_push
+from services.heartbeat_keys import is_backfill, is_recovery_key
 
 
 logger = logging.getLogger(__name__)
@@ -138,29 +139,93 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
                 "heartbeat_minute": device["heartbeat_minute"],
             }
 
-    # devices 테이블 갱신
-    new_suspicious_count = device["suspicious_count"] + 1 if suspicious else 0
     steps_delta = payload.get("steps_delta")
-    await db.execute(
-        """UPDATE devices SET
-            last_seen = $1,
-            steps_delta = $2,
-            battery_level = $3,
-            suspicious_count = $4,
-            updated_at = $5
-           WHERE user_id = $6 AND device_id = $7""",
-        now_dt,
-        steps_delta,
-        battery_level,
-        new_suspicious_count,
-        now_dt,
-        user_id, device_id,
-    )
+
+    # ── 이 heartbeat가 "오늘의 안부 확인"인가, "지난 기록 보정"인가 ──
+    #
+    # 도착 시각과 기록이 원래 속한 날짜는 다를 수 있다. 통신 장애로 n일 heartbeat가
+    # 클라 보류 큐에 남았다가 n+1일에 뒤늦게 전송되면, 걸음수는 n일 것인데 도착은 n+1일이다.
+    # 이걸 오늘 것으로 취급하면 (1) "오늘 안부 확인 완료" Push가 잘못 나가고,
+    # (2) 뒤이어 도착하는 진짜 오늘 heartbeat가 is_first_today=False에 걸려
+    #     "오늘 N보" 알림을 잃으며, (3) 지난 날의 suspicious로 오늘 경고가 새로 생긴다.
+    #
+    # 판정 규칙: scheduled_key가 "<도착일>_HH:MM"인 경우에만 오늘의 안부 확인이다.
+    #   · "<지난날>_HH:MM"      → 지난 기록 보정 (is_backfill)
+    #   · "recovery_<오늘>"     → 예약시각 이전 살아있음 신호. 걸음수를 싣지 않으며
+    #                             당일 안부 확인으로 치지 않는다
+    #   · None (수동 보고)      → 사용자가 직접 누른 것이므로 항상 당일 취급
+    try:
+        device_tz = ZoneInfo(device["timezone"] or "Asia/Seoul")
+    except Exception:
+        device_tz = ZoneInfo("Asia/Seoul")
+    arrival_date = now_dt.astimezone(device_tz).date()
+    # 판정 규칙과 그 경계(엄격히 과거일 때만)는 heartbeat_keys.is_backfill 참조.
+    backfill = is_backfill(scheduled_key, arrival_date)
+    # 당일 안부 확인으로 카운트할 기록인가 (auto_report / 오늘 N보 알림 대상)
+    is_todays_report = not backfill and not is_recovery_key(scheduled_key)
+
+    # devices 테이블 갱신.
+    # 지난 기록 보정은 **걸음수를 덮어쓰지 않는다** — 과거 값이 대시보드 카드에 현재
+    # 걸음수로 표시되면 오정보가 된다.
+    #
+    # 반면 battery_level은 **갱신한다.** 이 필드의 계약은 "마지막으로 수신한 heartbeat의
+    # 배터리"이고(미수신 스케줄러가 `battery_level < 20` → '배터리 방전 추정'으로 분기할 때
+    # 읽는 값, services/scheduler.py), 지난 기록도 엄연히 수신한 heartbeat다. 저장을
+    # 생략하면 그보다 **더 오래된** 값이 남아 계약이 더 어긋난다. "지금 배터리가 부족하다"고
+    # 주장하는 Push를 생략하는 것과, 마지막으로 아는 값을 보관하는 것은 별개다.
+    # ⚠️ 이 필드는 표시 전용이 아니라 스케줄러의 경고 등급 분기 입력이다 — 바꾸기 전에
+    #    scheduler.py의 battery 분기를 함께 볼 것.
+    #
+    # suspicious_count는 **보정 기록이 활동을 증명할 때만 리셋**한다. 아래에서
+    # resolve_active_alerts로 활성 경고를 지우면서 카운터만 남겨두면, 경고는 사라졌는데
+    # 다음 suspicious 한 번에 곧장 상위 등급으로 튀는 불일치가 생긴다.
+    if backfill:
+        if suspicious:
+            await db.execute(
+                """UPDATE devices SET last_seen = $1, battery_level = $2, updated_at = $3
+                   WHERE user_id = $4 AND device_id = $5""",
+                now_dt, battery_level, now_dt, user_id, device_id,
+            )
+        else:
+            await db.execute(
+                """UPDATE devices SET last_seen = $1, battery_level = $2,
+                    suspicious_count = 0, updated_at = $3
+                   WHERE user_id = $4 AND device_id = $5""",
+                now_dt, battery_level, now_dt, user_id, device_id,
+            )
+    else:
+        new_suspicious_count = device["suspicious_count"] + 1 if suspicious else 0
+        await db.execute(
+            """UPDATE devices SET
+                last_seen = $1,
+                steps_delta = $2,
+                battery_level = $3,
+                suspicious_count = $4,
+                updated_at = $5
+               WHERE user_id = $6 AND device_id = $7""",
+            now_dt,
+            steps_delta,
+            battery_level,
+            new_suspicious_count,
+            now_dt,
+            user_id, device_id,
+        )
 
     # 당일 첫 heartbeat 여부 판정 — heartbeat_logs INSERT 전에 조회해야 정확하다.
     # 기기 로컬 타임존 기준 자정 이후 수신 이력 유무로 판단.
     # 이 플래그는 auto_report / steps 알림 중복 생성을 차단하는 데 쓴다.
     # heartbeat_logs INSERT는 매번 수행(이력·차트용), 알림 생성만 당일 첫 수신에 한정.
+    #
+    # **"오늘의 안부 확인"에 해당하는 행만 센다.** 지난 기록 보정("<지난날>_HH:MM")이나
+    # 살아있음 신호("recovery_<날짜>")가 먼저 도착했다는 이유로 뒤이어 오는 진짜 오늘
+    # heartbeat가 "첫 수신 아님"으로 걸리면 "오늘 N보" 알림이 통째로 사라진다.
+    # 비교는 **파이썬의 is_backfill과 정확히 같은 기준**이어야 한다 — `= 오늘`이 아니라
+    # `>= 오늘`이다. 파이썬은 `키 날짜 < 도착일`일 때만 지난 기록으로 보므로, 시계 오차로
+    # 날짜가 앞선 행은 "오늘의 기록"으로 처리된다. SQL만 `=`로 두면 그 행이 카운트되지 않아
+    # 같은 날 "오늘 N보"가 두 번 발송된다(방금 클라 쪽에서 고친 것과 똑같은 종류의 불일치).
+    # 날짜 문자열은 YYYY-MM-DD라 사전순 비교가 날짜순과 일치한다.
+    # recovery_는 접두사가 날짜보다 사전순으로 뒤라 `>=`를 통과하므로 명시적으로 제외한다.
+    # 수동 보고는 key가 NULL이며 기존과 동일하게 당일 기록으로 카운트한다.
     is_first_today = await db.fetchval(
         """WITH safe AS (
                SELECT COALESCE(z.name, 'Asia/Seoul') AS tz
@@ -173,6 +238,13 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
                  AND server_ts >= (
                      (now() AT TIME ZONE safe.tz)::date
                  )::timestamp AT TIME ZONE safe.tz
+                 AND (
+                     scheduled_key IS NULL
+                     OR (
+                         scheduled_key NOT LIKE 'recovery%'
+                         AND left(scheduled_key, 10) >= to_char((now() AT TIME ZONE safe.tz)::date, 'YYYY-MM-DD')
+                     )
+                 )
            )""",
         device_id,
         device["timezone"],
@@ -196,6 +268,33 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
         scheduled_key,
     )
 
+    # 지난 기록 보정 — 이력 적재와 생존 확인까지만 하고 끝낸다.
+    #
+    # 아래 알림들은 모두 "오늘의 상태"를 전제하므로 지난 날짜 기록으로 발송하면 오정보가 된다:
+    #   · auto_report("오늘 안부 확인 완료") — 오늘 확인된 게 아니다
+    #   · steps("오늘 N보") — 어제 걸음수가 오늘 수치로 나간다
+    #   · suspicious 에스컬레이션 — 그 날의 미수신은 서버 스케줄러가 이미 경고했다.
+    #     지금 또 만들면 같은 날에 대해 두 번 경고하는 셈이 된다
+    #   · 배터리 부족 Push — "지금 배터리가 부족하다"는 주장이라 지난 시점 잔량으로 보내면
+    #     오정보다. (값 자체는 위에서 devices에 보관 — 저장과 알림은 별개)
+    # 반면 **활성 경고 해소는 수행한다** — 늦게라도 도착했다는 것은 그 날 기기가 살아
+    # 있었다는 증거이고, 보호자의 걱정을 푸는 것이 이 신호의 핵심 가치다
+    # (위에서 suspicious_count도 함께 리셋해 경고/카운터 상태를 일치시킨다).
+    if backfill:
+        if not suspicious:
+            # 긴급 도움 요청(SOS)은 대상자의 의도적 액션이므로 지난 기록으로 지우지 않는다.
+            await alert_service.resolve_active_alerts(db, user_id, include_emergency=False)
+        logger.info(
+            f"[heartbeat backfill] device_id={device_id} key={scheduled_key} "
+            f"arrival={arrival_date} — 이력 적재 + 경고 해소만 수행"
+        )
+        return {
+            "status": "ok",
+            "server_time": datetime.now(KST).strftime("%Y-%m-%dT%H:%M:%S+09:00"),
+            "heartbeat_hour": device["heartbeat_hour"],
+            "heartbeat_minute": device["heartbeat_minute"],
+        }
+
     # 활성 경고 해소 — suspicious=false일 때만 "정상 복귀" 알림 발송
     if not suspicious:
         if manual:
@@ -209,13 +308,16 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             # 두 알림이 같은 초에 도착해 보호자 화면이 지저분해진다.
             # → 실제 경고가 해소된 경우는 resolved 쪽을 우선하고 auto_report는 생략.
             serious_resolved = bool(set(resolved_levels) & {"caution", "warning", "urgent"})
-            if not serious_resolved:
+            # is_todays_report=False는 회복 전송("recovery_<오늘>") — 예약시각 이전에
+            # 보내는 살아있음 신호다. 경고 해소는 하되 "오늘 안부 확인 완료"는 보내지
+            # 않는다. 보내면 몇 시간 뒤 정시 전송에서 같은 알림이 한 번 더 나간다.
+            if not serious_resolved and is_todays_report:
                 await _send_auto_report_to_guardians(db, user_id)
 
         # 활동 감지 알림 — 자동 heartbeat + 당일 첫 수신 + steps_delta > 0일 때만.
         # 수동 보고는 "수동 안부 확인" 알림이 이미 있으므로 steps 알림 중복 생략.
         # 하루 여러 번 전송 시 동일 걸음수가 여러 번 뜨는 UX 문제를 차단한다.
-        if not manual and is_first_today and steps_delta is not None and steps_delta > 0:
+        if not manual and is_todays_report and is_first_today and steps_delta is not None and steps_delta > 0:
             await _save_steps_info_notification(db, user_id, steps_delta)
     else:
         await alert_service.downgrade_alerts_on_suspicious(db, user_id)
