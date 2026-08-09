@@ -5,6 +5,7 @@ import os
 from typing import Optional
 
 from i18n.messages import get_message
+from services.alias import clean_alias
 
 logger = logging.getLogger(__name__)
 
@@ -58,27 +59,33 @@ _LEVEL_LABELS = {
 # 대상자 invite_code를 함께 로깅할 레벨 (보호자가 어느 대상자 때문에 알림을 받았는지 식별용)
 _LEVELS_WITH_SUBJECT = {"CAUTION", "WARNING", "URGENT", "EMERGENCY"}
 
-# 보호자 Push 제목에 덧붙일 대상자 별칭의 최대 길이 (렌더링 시 방어적 절단)
-_ALIAS_MAX_LEN = 20
 
+def decorate_body(body: str, alias: Optional[str]) -> str:
+    """보호자 Push 본문 앞에 대상자 별칭을 덧붙인다 — "삼촌 · 오늘 안부 확인이…".
 
-def decorate_title(title: str, alias: Optional[str]) -> str:
-    """보호자 Push 제목 뒤에 대상자 별칭을 덧붙인다 — "⚠ 주의 · 삼촌".
+    제목이 아니라 본문에 붙이는 이유:
+    - 접힌 알림에서 제목은 절대 줄바꿈되지 않는다. 일부 기기(샤오미 등)는
+      제목과 본문을 아예 한 줄에 이어붙이므로 제목이 길수록 별칭이 먼저 잘린다.
+      펼친 알림에서 여러 줄로 늘어나는 건 본문뿐이라, 본문 앞에 둬야 별칭
+      20자가 항상 온전히 읽힌다.
+    - 접힌 상태에서는 제목 바로 뒤가 본문이므로, 본문 앞에 둬도 짧은 등급
+      라벨("⚠ 주의") 직후에 그대로 붙어 나온다 — 잃는 게 없다.
 
-    앞이 아니라 뒤에 붙이는 이유: 제목은 "⚠ 주의"처럼 짧은 등급 라벨이라,
-    안드로이드 트레이에서 한 줄로 잘려도 등급이 항상 먼저 읽혀야 한다.
+    별칭은 문장 *바깥*에 구분자로만 붙인다. 문장 안에 끼워 넣으면 한국어
+    주격조사 이/가(받침 의존), 러시아어·폴란드어 격변화, 터키어 소유격 모음조화,
+    아랍어 정관사 같은 언어별 문법이 걸리는데, 별칭은 영문·숫자·이모지가
+    올 수 있는 자유 입력이라 어떤 규칙도 세울 수 없다. 구분자로 ` · `를 쓰는 것도
+    같은 이유다 — 쉼표는 아랍어 `،`·전각 `，`, 콜론은 프랑스어 앞 공백 규칙처럼
+    로케일별 분기가 되살아나지만, 가운뎃점은 어느 언어의 문장부호도 아니다.
 
     이 함수는 모든 보호자 알림이 지나는 단일 통로(send_push) 앞단에 놓이므로
     어떤 입력에도 예외를 던지지 않는다 — alias가 없거나 비었거나 문자열이
-    아니면 원본 제목을 그대로 반환해 기존 동작으로 폴백한다.
+    아니면 원본 본문을 그대로 반환해 기존 동작으로 폴백한다(구버전 앱 하위호환).
     """
-    if not isinstance(alias, str):
-        return title
-    # 제어문자·개행 제거 후 연속 공백 축약 (저장 시에도 sanitize하지만 이중 방어)
-    cleaned = " ".join("".join(c for c in alias if c.isprintable()).split())
+    cleaned = clean_alias(alias)
     if not cleaned:
-        return title
-    return f"{title} · {cleaned[:_ALIAS_MAX_LEN]}"
+        return body
+    return f"{cleaned} · {body}"
 
 
 def _format_push_log_prefix(fcm_token: str, data: Optional[dict]) -> str:
@@ -216,8 +223,8 @@ async def push_subject_safety_net(fcm_token: str, locale: str = "ko_KR") -> bool
 async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR", alias: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_battery_low_title"), alias),
-        body=get_message(locale, "push_battery_low_body"),
+        title=get_message(locale, "push_battery_low_title"),
+        body=decorate_body(get_message(locale, "push_battery_low_body"), alias),
         data={"type": "alert_info", "reason": "battery_low", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -226,8 +233,8 @@ async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional
 async def push_battery_dead(fcm_token: str, subject_user_id: int, battery_level: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR", alias: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_battery_dead_title"), alias),
-        body=get_message(locale, "push_battery_dead_body", battery_level=battery_level),
+        title=get_message(locale, "push_battery_dead_title"),
+        body=decorate_body(get_message(locale, "push_battery_dead_body", battery_level=battery_level), alias),
         data={"type": "alert_info", "reason": "battery_dead", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -240,8 +247,8 @@ async def push_caution(fcm_token: str, subject_user_id: int, sound: Optional[str
         body = get_message(locale, "push_caution_missing_body")
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_caution_title"), alias),
-        body=body,
+        title=get_message(locale, "push_caution_title"),
+        body=decorate_body(body, alias),
         data={"type": "alert_caution", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -254,8 +261,8 @@ async def push_warning(fcm_token: str, subject_user_id: int, sound: Optional[str
         body = get_message(locale, "push_warning_body")
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_warning_title"), alias),
-        body=body,
+        title=get_message(locale, "push_warning_title"),
+        body=decorate_body(body, alias),
         data={"type": "alert_warning", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -268,8 +275,8 @@ async def push_urgent(fcm_token: str, subject_user_id: int, days: int = 3, sound
         body = get_message(locale, "push_urgent_body", days=days)
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_urgent_title"), alias),
-        body=body,
+        title=get_message(locale, "push_urgent_title"),
+        body=decorate_body(body, alias),
         data={"type": "alert_urgent", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -278,8 +285,8 @@ async def push_urgent(fcm_token: str, subject_user_id: int, days: int = 3, sound
 async def push_urgent_secondary(fcm_token: str, subject_user_id: int, days: int = 3, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR", alias: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_urgent_title"), alias),
-        body=get_message(locale, "push_urgent_secondary_body", days=days),
+        title=get_message(locale, "push_urgent_title"),
+        body=decorate_body(get_message(locale, "push_urgent_secondary_body", days=days), alias),
         data={"type": "alert_urgent", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -288,8 +295,8 @@ async def push_urgent_secondary(fcm_token: str, subject_user_id: int, days: int 
 async def push_resolved(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR", alias: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_resolved_title"), alias),
-        body=get_message(locale, "push_resolved_body"),
+        title=get_message(locale, "push_resolved_title"),
+        body=decorate_body(get_message(locale, "push_resolved_body"), alias),
         data={"type": "alert_resolved", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -298,8 +305,8 @@ async def push_resolved(fcm_token: str, subject_user_id: int, sound: Optional[st
 async def push_manual_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR", alias: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_manual_report_title"), alias),
-        body=get_message(locale, "push_manual_report_body"),
+        title=get_message(locale, "push_manual_report_title"),
+        body=decorate_body(get_message(locale, "push_manual_report_body"), alias),
         data={"type": "manual_report", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -308,8 +315,8 @@ async def push_manual_report(fcm_token: str, subject_user_id: int, sound: Option
 async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR", alias: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_auto_report_title"), alias),
-        body=get_message(locale, "push_auto_report_body"),
+        title=get_message(locale, "push_auto_report_title"),
+        body=decorate_body(get_message(locale, "push_auto_report_body"), alias),
         data={"type": "auto_report", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -341,8 +348,8 @@ async def push_subscription_grace_period(fcm_token: str, locale: str = "ko_KR") 
 async def push_alert_cleared(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR", alias: str | None = None) -> bool:
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_alert_cleared_title"), alias),
-        body=get_message(locale, "push_alert_cleared_body"),
+        title=get_message(locale, "push_alert_cleared_title"),
+        body=decorate_body(get_message(locale, "push_alert_cleared_body"), alias),
         data={"type": "alert_cleared", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )
@@ -378,8 +385,8 @@ async def push_emergency(
     body = note if note else get_message(locale, "push_emergency_body")
     return await send_push(
         fcm_token,
-        title=decorate_title(get_message(locale, "push_emergency_title"), alias),
-        body=body,
+        title=get_message(locale, "push_emergency_title"),
+        body=decorate_body(body, alias),
         data=data,
         sound=sound,
     )

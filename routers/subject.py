@@ -78,7 +78,7 @@ async def put_aliases(
     user: dict = Depends(require_guardian),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    """대상자 별칭 동기화 — 보호자 Push 제목에 "누구의 알림인지"를 표시하기 위함.
+    """대상자 별칭 동기화 — 보호자 Push 본문에 "누구의 알림인지"를 표시하기 위함.
 
     개별 저장(1개짜리 맵)과 앱 업데이트 후 백필(맵 전체)이 같은 경로를 쓴다.
     별칭이 없으면 Push는 기존 정형 문구 그대로 나가므로, 이 호출이 실패해도

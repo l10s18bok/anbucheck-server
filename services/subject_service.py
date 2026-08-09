@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 from fastapi import HTTPException, status
 
+from services.alias import clean_alias
 from services.heartbeat_keys import log_local_date as _log_local_date
 
 
@@ -145,20 +146,14 @@ async def get_subjects(db: asyncpg.Connection, guardian_user_id: int) -> dict:
     }
 
 
-ALIAS_MAX_LEN = 20
-
-
 def sanitize_alias(raw: str | None) -> str | None:
-    """별칭 정규화 — 제어문자·개행 제거, 연속 공백 축약, 20자 절단.
+    """별칭 정규화 (저장 시점) — 규칙은 services.alias.clean_alias가 소유한다.
 
-    Push 제목에 그대로 실리는 값이라 저장 시점에 한 번 걸러둔다
-    (렌더링 시점의 push_service.decorate_title이 이중 방어).
+    Push 본문에 그대로 실리는 값이라 저장 시점에 한 번 걸러둔다
+    (렌더링 시점의 push_service.decorate_body가 같은 규칙으로 이중 방어).
     빈 값이 되면 None을 반환해 DB에 NULL로 남긴다 → 정형 문구 폴백.
     """
-    if not isinstance(raw, str):
-        return None
-    cleaned = " ".join("".join(c for c in raw if c.isprintable()).split())
-    return cleaned[:ALIAS_MAX_LEN] or None
+    return clean_alias(raw)
 
 
 async def sync_aliases(

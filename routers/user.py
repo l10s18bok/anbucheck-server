@@ -138,11 +138,11 @@ async def disable_subject(
         coros = [
             push_service.send_push(
                 g["fcm_token"],
-                push_service.decorate_title(
-                    get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_title"),
+                get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_title"),
+                push_service.decorate_body(
+                    get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_body", invite_code=invite_code),
                     g.get("alias"),
                 ),
-                get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_body", invite_code=invite_code),
                 data={"type": "subject_withdrawn", "invite_code": invite_code},
             )
             for g in guardians
@@ -260,11 +260,11 @@ async def delete_me(
             coros = [
                 push_service.send_push(
                     g["fcm_token"],
-                    push_service.decorate_title(
-                        get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_title"),
+                    get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_title"),
+                    push_service.decorate_body(
+                        get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_body", invite_code=invite_code),
                         g.get("alias"),
                     ),
-                    get_message(g.get("locale") or "ko_KR", "push_subject_withdrawn_body", invite_code=invite_code),
                     data={"type": "subject_withdrawn", "invite_code": invite_code},
                 )
                 for g in guardians
