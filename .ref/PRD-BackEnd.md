@@ -65,7 +65,8 @@
 
 ## 2. 안부 확인 아키텍처 (서버 관점)
 
-> 📊 **전체 플로우차트**: [heartbeat_flowchart.md](heartbeat_flowchart.md) 참조
+> 📊 **전체 플로우차트**: [heartbeat_flowchart.md](../../kr.co.anbucheck/.claude/rules/heartbeat_flowchart.md) 참조
+> — 정본은 **앱 repo**(`kr.co.anbucheck/.claude/rules/`)에 있다. 서버 repo에 있던 사본은 2026-04-19 이후 갱신이 끊겨 폐기된 Silent Push 아키텍처를 설명하고 있었으므로 삭제했다. 사본을 다시 만들지 말 것 — 드리프트가 반복된다.
 > - 차트 2: 서버 Heartbeat 수신 후 판정 플로우 (suspicious 판정, 경고 해소/하향)
 > - 차트 3: Heartbeat 미수신 시 경고 플로우 (배터리 정보/주의/경고/긴급 등급)
 > - 차트 4: 경고 등급 상태도 (정상/주의/경고/긴급)
@@ -155,7 +156,7 @@ guardians: { subject_user_id:1, guardian_user_id:2 }
 
 ### 2.4 경고 발생 흐름
 
-> 📊 상세 플로우차트: [heartbeat_flowchart.md](heartbeat_flowchart.md) — 차트 2, 3, 5 참조
+> 📊 상세 플로우차트: [heartbeat_flowchart.md](../../kr.co.anbucheck/.claude/rules/heartbeat_flowchart.md) — 차트 2, 3, 5 참조
 
 **경고 등급 최종 확정 테이블 (4단계):**
 
@@ -584,7 +585,7 @@ Response: 200 OK
 - heartbeat 수신 시 해당 대상자의 active 경고가 있으면 → 자동 해소 (status: `resolved`) + 보호자에게 "정상 복귀" Push 발송
 - 대상자는 구독과 무관하게 항상 heartbeat 전송 (구독은 보호자가 관리)
 - 보호자 구독이 만료된 경우, heartbeat는 수신하되 보호자에게 경고/알림을 발송하지 않음
-- **서버 판정 로직** (상세: [heartbeat_flowchart.md](heartbeat_flowchart.md) 차트 2):
+- **서버 판정 로직** (상세: [heartbeat_flowchart.md](../../kr.co.anbucheck/.claude/rules/heartbeat_flowchart.md) 차트 2):
   - `is_first_today` 판정: 기기 로컬 타임존 자정 이후 수신 이력 — `heartbeat_logs` INSERT **전**에 조회해야 정확 (INSERT 이후엔 항상 false). `auto_report` / `steps` 알림 **중복 방지에만** 사용. heartbeat_logs INSERT는 매번 수행 (이력·차트용)
     - **legacy timezone alias 처리**: Android `flutter_timezone`이 반환하는 "US/Pacific", "Japan", "ROK", "PRC", "Brazil/East" 등 legacy IANA alias는 Railway PostgreSQL `pg_timezone_names`에 존재하지 않아 `AT TIME ZONE` 사용 시 `InvalidParameterValueError`로 크래시. `heartbeat_service.py`의 `is_first_today` 쿼리에 scheduler.py와 동일한 `pg_timezone_names LEFT JOIN COALESCE(..., 'Asia/Seoul')` CTE 패턴을 적용 — 미인식 alias는 Asia/Seoul로 폴백(날짜 경계가 UTC+9 기준으로 계산되나 크래시 없음).
     - ⚠️ **불변 규칙**: 사용자 제공 timezone 문자열을 SQL `AT TIME ZONE`에 직접 전달하는 패턴은 사용 금지. 반드시 `WITH safe AS (SELECT COALESCE(z.name, 'Asia/Seoul') AS tz FROM (SELECT $N::text AS inp) t LEFT JOIN pg_timezone_names z ON z.name = t.inp)` CTE를 앞에 두고 `safe.tz`를 참조하거나, Python-side에서 버킷팅하여 SQL `AT TIME ZONE` 자체를 제거해야 한다.
@@ -1508,7 +1509,7 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 
 ### 6.1 경고 생성 스케줄러 (고정 시각 기반 + 등급별 판정)
 
-> 📊 상세 플로우차트: [heartbeat_flowchart.md](heartbeat_flowchart.md) — 차트 3 참조
+> 📊 상세 플로우차트: [heartbeat_flowchart.md](../../kr.co.anbucheck/.claude/rules/heartbeat_flowchart.md) — 차트 3 참조
 
 ```
 실행 주기: 매 분 정각 (APScheduler CronTrigger(second=0))
