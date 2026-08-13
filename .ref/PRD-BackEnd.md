@@ -226,6 +226,7 @@ heartbeat 수신 → last_seen 갱신
 **경고 판정 및 발송:**
 - 서버는 각 기기의 `heartbeat_hour` + 2시간 경과 시점에 미수신 여부를 체크
 - **야간 발송 제한 (모든 등급 공통):** 22:00~09:00 사이에 판정된 경고는 즉시 발송하지 않고, **다음 날 오전 09:00에 일괄 발송**
+  - ⚠️ **현재 미구현이다(2026-08-13 확인).** `config.QUIET_HOUR_START/END`는 정의만 되어 있고 코드 어디에서도 참조되지 않으며, `scheduler._process_missed_heartbeat`에 야간 분기가 없다. 실제로 동작하는 야간 억제는 **보호자별 DND**(`guardian_notification_settings` → `alert_service.should_push`, urgent는 무관하게 항상 발송)뿐이다. 이 절을 구현 근거로 인용하기 전에 코드를 먼저 확인할 것
   - 예: 새벽 02:00에 긴급 등급 판정 → 오전 09:00에 발송
   - 예: 밤 23:00에 주의 등급 판정 → 다음 날 오전 09:00에 발송
   - 서버는 판정 시점에 경고를 DB에 기록하되, `scheduled_send_at`을 다음 날 09:00으로 설정
@@ -839,7 +840,26 @@ Response: 200 OK
 
 - **대상자 본인만** 변경 가능 (보호자가 호출 시 403 Forbidden)
 - 대상자 본인 기기(device_id + user_id) 검증
-- 허용 범위: 00:00 ~ 23:59 (시: 0~23, 분: 0~59)
+- **허용 범위: `00:00 ~ 21:59` (시: 0~21, 분: 0~59)** — 상수는 `config.HEARTBEAT_HOUR_MIN/MAX`.
+  범위 밖은 `models.device.HeartbeatScheduleIn`의 pydantic 제약에서 422, 라우터의 명시 검사에서 400으로 거부된다(이중).
+  - ⚠️ **상한 21시는 §4.20 미수신 체크의 구조적 제약이다(제품 취향 아님).** 그 쿼리는 발화 시각을
+    "그날 로컬 자정 + (예약시각 + 2h)"로 계산하고 "그날"을 매 tick마다 `now()`에서 다시 파생시키므로,
+    `heartbeat_hour * 60 + heartbeat_minute + 120 >= 1440`(= **22시 이상**)이면 우변이 항상 `now()`보다
+    미래라 **등호가 영원히 성립하지 않는다.** 그러면 그 대상자는 미수신 판정 자체가 실행되지 않아
+    `subject_safety_net` 푸시·보호자 caution→warning→urgent 에스컬레이션·`alerts` 생성이 **전부 조용히
+    사라진다.** 22시 이상을 허용하려면 발화 시각뿐 아니라 판정 창(`last_seen < 로컬 자정`)까지 같은
+    "예약 슬롯 기준"으로 함께 옮겨야 한다 — 발화 시각만 다음 날로 미루면 전날 정상 전송한 사용자에게
+    매일 거짓 미수신 경고가 나간다.
+  - ⚠️ **하한은 의도적으로 두지 않는다(0시 허용). 다시 넣지 말 것** — "새벽 예약은 걸음수 0이라
+    suspicious 오탐"은 주간 생활자만 가정한 논리다. `steps_delta`가 "오늘 자정~현재" 누적이라, 밤에
+    일하고 아침에 잠드는 사람에게는 00:00~07:00이 곧 자기 활동 시간이라 걸음이 가장 잘 잡힌다.
+    하한을 두면 야간 노동 1인 가구가 자기 생활에 맞는 시각을 못 고르게 된다.
+  - ⚠️ 400/422의 `detail`은 **한국어 하드코딩**이며 클라이언트에 노출되지 않는다(`DeviceRemoteDatasource`가
+    상태코드만 담아 throw). 노출하려면 서버 에러 메시지 i18n이 선행돼야 한다 — 지금 노출하면 19개 언어
+    사용자에게 한국어가 그대로 보인다.
+- 클라이언트도 같은 범위로 피커를 제한한다(`HeartbeatScheduleMixin.heartbeatHourMin/Max`). **두 값은 반드시 일치.**
+  단 구버전 앱이 계속 PATCH할 수 있으므로 **진짜 방어선은 서버**다. 등록 경로(`POST /users`,
+  `/users/enable-subject`)는 `DEFAULT_HEARTBEAT_HOUR` 상수로 고정되므로 이 엔드포인트가 유일한 유입구다.
 - 서버에서 `devices.heartbeat_hour`, `devices.heartbeat_minute` 갱신
 - 클라이언트가 응답 수신 후 WorkManager/BGTask + 로컬 안전망 알림 재예약
 
@@ -1539,6 +1559,16 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
      AND d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz)
 
    ※ 기본: heartbeat_hour=18, heartbeat_minute=0 → 기기 로컬 20:00에 체크
+
+   ⚠️ **이 쿼리가 heartbeat_hour 상한을 21시로 강제하는 이유다(§4.14).**
+      우변은 "그날 로컬 자정 + (예약시각 + 2h)"인데, 그 "그날"이 매 tick마다 now()에서 다시
+      파생된다. 따라서 heartbeat_hour * 60 + heartbeat_minute + 120 >= 1440(= 22시 이상)이면
+      우변이 항상 now()보다 미래가 되어 **등호가 영원히 성립하지 않는다** — 해당 대상자는
+      미수신 판정이 한 번도 실행되지 않고, 조용히 실패하므로 로그에도 남지 않는다.
+      (21:59 → 23:59로 하루 안에 머무는 것이 마지막 유효 케이스.)
+      22시 이상을 지원하려면 발화 시각과 함께 마지막 줄의 판정 창(last_seen < 로컬 자정)까지
+      같은 "예약 슬롯 기준"으로 옮겨야 한다. 발화 시각만 다음 날로 미루면 전날 정상 전송한
+      사용자가 매일 거짓 미수신으로 잡힌다.
 
 2. 대상자 본인 안부유도 푸시 (Android 한정 — 구독·보호자 유무와 무관):
    - row.platform == 'android' 이고 fcm_token이 있으면 push_subject_safety_net(fcm_token, locale)

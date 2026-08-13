@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 import asyncpg
 
+from config import HEARTBEAT_HOUR_MIN, HEARTBEAT_HOUR_MAX
 from database import get_db
 from middleware.auth import get_current_user
 from models.device import FcmTokenIn, HeartbeatScheduleIn, HeartbeatScheduleOut, DeviceInfoOut
@@ -103,8 +104,15 @@ async def update_heartbeat_schedule(
     db: asyncpg.Connection = Depends(get_db),
 ):
     h, m = body.heartbeat_hour, body.heartbeat_minute
-    if not (0 <= h <= 23):
-        raise HTTPException(status_code=400, detail="heartbeat 시각은 00:00~23:59 사이여야 합니다")
+    # 모델(HeartbeatScheduleIn)이 이미 같은 범위로 거르지만, 여기서도 한 번 더 막는다 —
+    # 22시 이상이 DB에 들어가면 그 대상자는 미수신 판정 자체가 실행되지 않아 경고가
+    # 조용히 사라진다(config.HEARTBEAT_HOUR_MAX 주석 참조). 이 값이 새는 경로는
+    # 이 엔드포인트 하나뿐이므로(등록은 DEFAULT_HEARTBEAT_HOUR 상수 고정) 여기가 유일한 관문이다.
+    if not (HEARTBEAT_HOUR_MIN <= h <= HEARTBEAT_HOUR_MAX):
+        raise HTTPException(
+            status_code=400,
+            detail=f"heartbeat 시각은 {HEARTBEAT_HOUR_MIN:02d}:00~{HEARTBEAT_HOUR_MAX:02d}:59 사이여야 합니다",
+        )
     if not (0 <= m <= 59):
         raise HTTPException(status_code=400, detail="heartbeat 분은 0~59 사이여야 합니다")
 
