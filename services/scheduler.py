@@ -381,6 +381,17 @@ async def job_ios_heartbeat_trigger() -> None:
     ⚠️ **+2h가 아니라 정각이다.** 미수신 체크(job_heartbeat_check, +2h)보다 먼저
     도착해야 그날의 안부가 제때 전달되고 거짓 미수신 경고가 나가지 않는다.
 
+    ⚠️ **정각 1회로 끝내지 않고 +5분·+10분에 재시도한다.** 2026-08-23 06:00 실측:
+    06:00:10 트리거 푸시가 기기에 도달하지 않았는데, 29초 뒤 같은 토큰으로 보낸 보호자
+    알림은 06:01에 정상 표시됐다. APNs는 기기가 도달 불가일 때 **토큰당 최신 알림 하나만
+    보관**하므로, 뒤에 온 보호자 알림이 보관돼 있던 트리거 푸시를 덮어쓴 것으로 보인다
+    (같은 날 07:01 잠금·화면 꺼짐 상태 재현에서는 1.8초 만에 확장이 실행됐다 — 수면
+    상태 자체는 원인이 아니다).
+
+    재시도가 안전한 이유: 첫 발사가 성공하면 last_seen이 갱신돼 조건이 깨지므로 **자동으로
+    멈춘다**. 여러 번 나가더라도 `apns-collapse-id` 덕에 사용자에게 보이는 알림은 하나로
+    대체된다. +15분에는 클라의 오프라인 폴백이 발화하므로 재시도는 그 전까지만 한다.
+
     ⚠️ **`supports_push_heartbeat` 게이팅은 전제조건이다.** 확장이 없는 구버전 iOS
     앱은 기존 gs_deadman 정시 로컬 알림을 그대로 갖고 있어, 이 푸시까지 받으면 같은
     시각에 알림이 2개 뜬다. 대상이 고령 사용자라 그 혼란은 이 앱이 없애려는 문제
@@ -405,10 +416,13 @@ async def job_ios_heartbeat_trigger() -> None:
                  AND d.platform = 'ios'
                  AND d.supports_push_heartbeat = true
                  AND d.fcm_token IS NOT NULL
-                 AND date_trunc('minute', now()) = date_trunc('minute',
-                       (date_trunc('day', now() AT TIME ZONE zz.tz)
-                          + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute)
-                       ) AT TIME ZONE zz.tz)
+                 -- 정각 / +5분 / +10분 재시도. 아래 주석의 이유로 1회 발사는 유실될 수 있다.
+                 AND EXTRACT(EPOCH FROM (
+                       date_trunc('minute', now())
+                       - (date_trunc('day', now() AT TIME ZONE zz.tz)
+                            + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute)
+                         ) AT TIME ZONE zz.tz
+                     )) / 60 IN (0, 5, 10)
                  AND d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz)""",
         )
 
