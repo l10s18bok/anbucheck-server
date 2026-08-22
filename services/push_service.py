@@ -225,7 +225,7 @@ async def push_subject_safety_net(fcm_token: str, locale: str = "ko_KR") -> bool
     )
 
 
-async def push_heartbeat_trigger(fcm_token: str, locale: str = "ko_KR") -> bool:
+async def push_heartbeat_trigger(fcm_token: str, locale: str = "ko_KR", collapse: bool = True) -> bool:
     """iOS 대상자 기기로 보내는 **예약시각 heartbeat 트리거 푸시**.
 
     iOS는 앱이 강제 종료되면 어떤 스케줄러도 돌지 않아, 킬 상태에서 실행되는 유일한
@@ -250,7 +250,8 @@ async def push_heartbeat_trigger(fcm_token: str, locale: str = "ko_KR") -> bool:
         data={"type": "heartbeat_push"},
         sound="default",
         notification_tag="anbu_heartbeat_push",
-        apns_collapse_id="anbu_heartbeat_push",
+        # 진단용으로 끌 수 있게 둔다 — collapse-id가 전달을 막는지 A/B로 가르기 위함.
+        apns_collapse_id="anbu_heartbeat_push" if collapse else None,
     )
 
 
