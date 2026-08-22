@@ -28,7 +28,7 @@ def _verify_admin(x_admin_key: str = Header(..., alias="X-Admin-Key")) -> None:
 @router.post("/admin/ios-heartbeat-trigger")
 async def ios_heartbeat_trigger(
     collapse: bool = Query(True, description="apns-collapse-id 부착 여부 — 전달 문제 A/B 진단용"),
-    device_id: str | None = Query(None, description="특정 기기만. 생략 시 조건에 맞는 iOS 기기 전부"),
+    device_id: str | None = Query(None, description="특정 기기만. 생략 시 **정규 잡과 동일 조건**(확장 탑재 + G+S)의 iOS 기기"),
     _: None = Depends(_verify_admin),
     db: asyncpg.Connection = Depends(get_db),
 ):
@@ -39,6 +39,13 @@ async def ios_heartbeat_trigger(
            JOIN devices d ON u.id = d.user_id
            WHERE d.platform = 'ios'
              AND d.fcm_token IS NOT NULL
+             -- ⚠️ **정규 잡과 동일한 대상 조건을 반드시 포함한다.**
+             -- 2026-08-23 사고: 이 두 줄이 없어 "모든 iOS 기기"가 대상이 되었고,
+             -- 확장이 없는 **실사용자 22명**에게 일요일 아침 6시 40분에 불필요한
+             -- "안부 확인이 필요합니다" 알림이 발송됐다. 진단 도구가 운영 사용자에게
+             -- 닿을 수 있는 형태로 존재해서는 안 된다.
+             AND d.supports_push_heartbeat = true
+             AND u.invite_code IS NOT NULL
              AND ($1::text IS NULL OR d.device_id = $1)""",
         device_id,
     )
