@@ -6,6 +6,9 @@ from config import HEARTBEAT_HOUR_MIN, HEARTBEAT_HOUR_MAX
 class FcmTokenIn(BaseModel):
     fcm_token: str = Field(..., max_length=4096)
     locale: str | None = Field(default=None, max_length=32)  # 기기 로케일
+    # 미지정(구버전 클라)이면 False로 기록한다 — 플래그가 **현재 실행 중인 클라**를
+    # 반영해야 하므로, 신버전→구버전 다운그레이드 시 자가 치유되도록 항상 덮어쓴다.
+    supports_push_heartbeat: bool = False
 
 
 class HeartbeatScheduleIn(BaseModel):

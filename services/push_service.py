@@ -107,11 +107,15 @@ async def send_push(
     data: Optional[dict] = None,
     sound: Optional[str] = "default",
     notification_tag: Optional[str] = None,
+    apns_collapse_id: Optional[str] = None,
 ) -> bool:
     """일반 Push 알림 발송.
 
     notification_tag: Android AndroidNotification.tag 직접 지정.
       None이면 data의 subject_user_id / invite_code 기반 자동 계산.
+    apns_collapse_id: 지정 시 iOS에서 **같은 id의 이전 알림을 새 알림이 대체**한다.
+      매일 반복되는 트리거 푸시가 알림센터에 쌓이지 않게 하는 용도.
+      ⚠️ 보호자 경고 계열에는 절대 주지 말 것 — 경고끼리 서로 지운다.
     """
     messaging = _get_messaging()
     if messaging is None:
@@ -139,6 +143,7 @@ async def send_push(
                 headers={
                     "apns-priority": "10",  # 즉시 전달 (배터리 절약 무시)
                     "apns-push-type": "alert",  # 알림 표시형 Push
+                    **({"apns-collapse-id": apns_collapse_id} if apns_collapse_id else {}),
                 },
                 payload=messaging.APNSPayload(
                     aps=messaging.Aps(
@@ -217,6 +222,35 @@ async def push_subject_safety_net(fcm_token: str, locale: str = "ko_KR") -> bool
         data={"type": "subject_safety_net"},
         sound="default",
         notification_tag="anbu_safety_net",  # 전용 태그 — 구독/보호자 알림의 anbu_subject_default와 분리
+    )
+
+
+async def push_heartbeat_trigger(fcm_token: str, locale: str = "ko_KR") -> bool:
+    """iOS 대상자 기기로 보내는 **예약시각 heartbeat 트리거 푸시**.
+
+    iOS는 앱이 강제 종료되면 어떤 스케줄러도 돌지 않아, 킬 상태에서 실행되는 유일한
+    경로가 **표시형 푸시가 띄우는 Notification Service Extension**이다(실측:
+    kr.co.anbucheck/.claude/rules/ios_nse_field_notes.md). 그 확장이 이 푸시를 받아
+    heartbeat를 직접 전송하므로, 사용자가 알림을 **탭하지 않아도** 안부가 전달된다.
+
+    - 발송 시각: 예약시각 **정각**(+2h가 아니다). 미수신 체크(+2h)보다 먼저 도착해야
+      거짓 미수신 경고를 막는다.
+    - 대상: `platform='ios'` + G+S(`invite_code IS NOT NULL`) + **`supports_push_heartbeat`**
+      + 오늘 미수신. 게이팅은 전제조건이다 — 확장이 없는 구버전에 보내면 기존
+      gs_deadman 로컬 알림과 겹쳐 같은 시각에 알림이 2개 뜬다.
+    - 문구는 기존 안전망 문구를 그대로 재사용한다. **확장이 성공하면 이 문구를
+      "전달했습니다"로 덮어쓰므로**, 여기 있는 문구는 확장이 실행되지 못했을 때
+      사용자가 보게 되는 **폴백**이다 — 그때는 탭 유도가 맞다.
+    - `apns-collapse-id`로 전날 알림을 새 알림이 대체한다.
+    """
+    return await send_push(
+        fcm_token,
+        title=get_message(locale, "push_subject_safety_net_title"),
+        body=get_message(locale, "push_subject_safety_net_body"),
+        data={"type": "heartbeat_push"},
+        sound="default",
+        notification_tag="anbu_heartbeat_push",
+        apns_collapse_id="anbu_heartbeat_push",
     )
 
 

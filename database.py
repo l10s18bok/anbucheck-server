@@ -20,6 +20,7 @@ LOCK_CLEANUP_NOTI = 2        # 자정 알림 정리
 LOCK_SUB_EXPIRE = 3          # 구독 만료 체크
 LOCK_CLEANUP_SUBJECTS = 4    # 미연결 대상자 정리
 LOCK_CLEANUP_LOGS = 5        # heartbeat_logs 30일 초과 삭제
+LOCK_IOS_HB_TRIGGER = 6      # iOS 예약시각 heartbeat 트리거 푸시
 
 
 async def get_db():
@@ -122,6 +123,19 @@ CREATE TABLE IF NOT EXISTS devices (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )
 """)
+    # iOS Notification Service Extension 지원 여부 (능력 플래그).
+    # ⚠️ **이 게이팅은 선택이 아니라 전제조건이다.** 확장이 없는 구버전 iOS 앱에
+    # 예약시각 트리거 푸시를 보내면, 그 기기는 기존 gs_deadman 로컬 알림도 함께
+    # 갖고 있어 같은 시각에 알림이 2개 뜬다. 대상이 고령 사용자라 그 혼란은
+    # 이 앱이 없애려는 바로 그 문제다. 새 클라만 true를 올리므로 구버전은
+    # 영영 false로 남아 푸시를 받지 않는다 → 구버전 사용자는 변화 0.
+    # 앱 버전 문자열(semver) 비교보다 정확하고, 훗날 확장을 뺀 버전이 나와도
+    # 플래그만 내리면 된다.
+    await conn.execute(
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS "
+        "supports_push_heartbeat BOOLEAN NOT NULL DEFAULT false"
+    )
+
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_devices_user ON devices (user_id)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices (last_seen)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_devices_platform ON devices (platform)")

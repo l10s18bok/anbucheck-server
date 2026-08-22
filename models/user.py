@@ -9,6 +9,9 @@ class DeviceIn(BaseModel):
     os_version: Optional[str] = Field(default=None, max_length=128)
     timezone: Optional[str] = Field(default="Asia/Seoul", max_length=64)  # IANA timezone
     locale: Optional[str] = Field(default="ko_KR", max_length=32)  # 기기 로케일
+    # iOS Notification Service Extension 탑재 여부. 구버전 클라는 이 필드를 보내지
+    # 않으므로 False가 되고, 서버는 그 기기에 예약시각 트리거 푸시를 보내지 않는다.
+    supports_push_heartbeat: bool = False
 
 
 class UserRegisterIn(BaseModel):

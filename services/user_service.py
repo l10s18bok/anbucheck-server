@@ -51,10 +51,14 @@ async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict
                 new_token, existing["id"],
             )
             await db.execute(
-                "UPDATE devices SET fcm_token = $1, timezone = $2, locale = $3, updated_at = NOW() WHERE device_id = $4",
+                "UPDATE devices SET fcm_token = $1, timezone = $2, locale = $3, "
+                "supports_push_heartbeat = $4, updated_at = NOW() WHERE device_id = $5",
                 device.get("fcm_token"),
                 device.get("timezone") or "Asia/Seoul",
                 device.get("locale") or "ko_KR",
+                # 미지정(구버전 클라)이면 False. 플래그는 **현재 실행 중인 클라**를
+                # 반영해야 하므로 항상 덮어쓴다 — 신버전→구버전 재설치 시 자가 치유.
+                bool(device.get("supports_push_heartbeat")),
                 device["device_id"],
             )
 
@@ -103,8 +107,9 @@ async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict
         await db.execute(
             """INSERT INTO devices
                (user_id, device_id, platform, os_version, fcm_token,
-                heartbeat_hour, heartbeat_minute, timezone, locale)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                heartbeat_hour, heartbeat_minute, timezone, locale,
+                supports_push_heartbeat)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
             user_id,
             device["device_id"],
             device["platform"],
@@ -114,6 +119,7 @@ async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict
             DEFAULT_HEARTBEAT_MINUTE,
             device.get("timezone") or "Asia/Seoul",
             device.get("locale") or "ko_KR",
+            bool(device.get("supports_push_heartbeat")),
         )
 
         subscription = None

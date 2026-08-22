@@ -83,15 +83,19 @@ async def update_fcm_token(
     user: dict = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),
 ):
+    # supports_push_heartbeat는 locale 유무와 무관하게 항상 기록한다 — 이 플래그가
+    # 현재 실행 중인 클라를 반영해야 게이팅이 정확해진다(§구버전 하위호환).
     if body.locale:
         await db.execute(
-            "UPDATE devices SET fcm_token = $1, locale = $2, updated_at = NOW() WHERE user_id = $3",
-            body.fcm_token, body.locale, user["user_id"],
+            "UPDATE devices SET fcm_token = $1, locale = $2, "
+            "supports_push_heartbeat = $3, updated_at = NOW() WHERE user_id = $4",
+            body.fcm_token, body.locale, body.supports_push_heartbeat, user["user_id"],
         )
     else:
         await db.execute(
-            "UPDATE devices SET fcm_token = $1, updated_at = NOW() WHERE user_id = $2",
-            body.fcm_token, user["user_id"],
+            "UPDATE devices SET fcm_token = $1, "
+            "supports_push_heartbeat = $2, updated_at = NOW() WHERE user_id = $3",
+            body.fcm_token, body.supports_push_heartbeat, user["user_id"],
         )
     return {"message": "FCM 토큰이 갱신되었습니다"}
 

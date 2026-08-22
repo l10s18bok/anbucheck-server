@@ -1531,6 +1531,73 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
 ## 6. 서버 스케줄러
 
 
+### 6.0 iOS heartbeat 트리거 푸시 (예약시각 **정각**, 매 1분 체크)
+
+> `services/scheduler.py: job_ios_heartbeat_trigger` / 락 `LOCK_IOS_HB_TRIGGER=6`
+
+iOS는 앱이 강제 종료되면 어떤 클라 스케줄러도 돌지 않는다(BGTaskScheduler 미사용).
+킬 상태에서도 실행되는 **유일한** 경로가 표시형 푸시가 띄우는 **Notification Service
+Extension**이고, 그 확장이 heartbeat를 직접 전송한다. 그래서 서버가 트리거가 된다.
+
+실측 근거는 앱 repo `kr.co.anbucheck/.claude/rules/ios_nse_field_notes.md`
+(2026-08-22, iPhone XS/iOS 17.4.1): **강제 종료 + 화면 잠금 상태**에서 확장이 실행됐고,
+HTTPS 왕복 200(1220ms/1613ms), 걸음수 조회(`steps=34`), 다른 프로세스가 심어둔 pending
+알림 제거까지 전부 성공했다.
+
+**발송 조건** (`platform='ios'` + G+S + 게이팅 + 오늘 미수신):
+
+```sql
+WHERE u.invite_code IS NOT NULL
+  AND d.platform = 'ios'
+  AND d.supports_push_heartbeat = true
+  AND d.fcm_token IS NOT NULL
+  AND date_trunc('minute', now()) = date_trunc('minute',
+        (date_trunc('day', now() AT TIME ZONE zz.tz)
+           + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute)
+        ) AT TIME ZONE zz.tz)
+  AND d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz)
+```
+
+쿼리 구조는 §6.1의 미수신 체크와 동일하다(기기 로컬 타임존 + 불량 zone은
+`pg_timezone_names` LEFT JOIN으로 `Asia/Seoul` 폴백). **차이는 `+120` 오프셋이 없다는 것뿐.**
+
+⚠️ **+2h가 아니라 정각인 이유**: 미수신 체크(+2h)보다 **먼저** 도착해야 그날 안부가
+제때 전달되고 거짓 미수신 경고가 나가지 않는다. +2h에 보내면 이미 경고가 나간 뒤다.
+
+⚠️ **`supports_push_heartbeat` 게이팅은 최적화가 아니라 전제조건이다.**
+확장이 없는 구버전 iOS 앱은 기존 `gs_deadman` 정시 로컬 알림을 그대로 갖고 있어, 이
+푸시까지 받으면 **같은 시각에 알림이 2개** 뜬다. 대상이 고령 사용자라 그 혼란은 이 앱이
+없애려는 문제 그 자체다. 게다가 클라의 `subject_safety_net` 처리는 2026-06-01
+(`fb73356`)에 들어왔으므로 그 이전 버전은 탭해도 대시보드로 떨어져 "안부 전달됨"
+다이얼로그조차 뜨지 않는다.
+
+- 플래그는 **새 클라만** 등록(`POST /users`)·토큰 갱신(`PUT /devices/fcm-token`)에서
+  `true`로 올린다. 구버전은 필드를 보내지 않아 `false`로 남는다.
+- **미지정 = false로 항상 덮어쓴다** — 플래그가 "현재 실행 중인 클라"를 반영해야
+  게이팅이 정확해지므로, 신버전→구버전 재설치(다운그레이드) 시 자가 치유된다.
+- **배포 순서가 저절로 안전해진다**: 이 잡을 앱 배포보다 먼저 켜도 그 시점엔 `true`인
+  기기가 없어 **실제 발송이 0건**이다. 앱이 퍼지며 점진 전환되고, 문제가 생기면
+  조건 한 줄로 전원 롤백된다. **강제 업데이트에 기대지 않는다**(§4.6의 버전 체크 skip
+  정책 때문에 iOS G+S 사용자에겐 강제 업데이트가 걸리지 않을 수 있다).
+
+**푸시 내용** (`push_heartbeat_trigger`):
+
+| 항목 | 값 |
+|---|---|
+| `data.type` | `heartbeat_push` |
+| 제목/본문 | `push_subject_safety_net_title/body` **재사용** |
+| `apns-collapse-id` | `anbu_heartbeat_push` — 전날 알림을 새 알림이 대체 |
+
+⚠️ 문구를 재사용하는 이유: **확장이 성공하면 이 문구를 "전달했습니다"로 덮어쓴다.**
+여기 있는 문구는 확장이 실행되지 못했을 때(자원 부족 등) 사용자가 보게 되는 **폴백**이고,
+그때는 기존처럼 탭 유도가 맞다. 즉 실패해도 현재 동작으로 안전하게 되돌아간다.
+
+⚠️ `apns-collapse-id`를 **보호자 경고 계열에 주지 말 것** — 경고끼리 서로 지운다.
+
+⚠️ **미수신 체크(§6.1)의 `subject_safety_net`은 Android 한정 그대로 유지한다.**
+iOS는 정각 트리거가 실패한 경우에도 폴백 문구가 이미 표시돼 있으므로 +2h에 또 보내면
+같은 날 알림이 2개가 된다.
+
 ### 6.1 경고 생성 스케줄러 (고정 시각 기반 + 등급별 판정)
 
 > 📊 상세 플로우차트: [heartbeat_flowchart.md](../../kr.co.anbucheck/.claude/rules/heartbeat_flowchart.md) — 차트 3 참조

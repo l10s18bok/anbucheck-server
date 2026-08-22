@@ -27,6 +27,7 @@ from database import (
     LOCK_SUB_EXPIRE,
     LOCK_CLEANUP_SUBJECTS,
     LOCK_CLEANUP_LOGS,
+    LOCK_IOS_HB_TRIGGER,
 )
 from i18n.messages import get_message
 from services.alert_service import get_guardian_settings, should_send, should_push
@@ -364,15 +365,73 @@ def _on_job_error(event) -> None:
     )
 
 
+# ─────────────────────────────────────────────────────────────
+# 2-b. iOS 예약시각 heartbeat 트리거 푸시 (매 1분)
+# ─────────────────────────────────────────────────────────────
+
+async def job_ios_heartbeat_trigger() -> None:
+    """iOS 대상자 기기로 **예약시각 정각**에 트리거 푸시를 보낸다.
+
+    iOS는 앱이 강제 종료되면 어떤 스케줄러도 돌지 않는다. 킬 상태에서도 실행되는
+    유일한 경로가 표시형 푸시가 띄우는 **Notification Service Extension**이며,
+    그 확장이 heartbeat를 직접 전송한다(실측 근거:
+    kr.co.anbucheck/.claude/rules/ios_nse_field_notes.md — 킬 상태에서 확장 실행,
+    HTTPS 왕복 성공, 걸음수 조회까지 확인).
+
+    ⚠️ **+2h가 아니라 정각이다.** 미수신 체크(job_heartbeat_check, +2h)보다 먼저
+    도착해야 그날의 안부가 제때 전달되고 거짓 미수신 경고가 나가지 않는다.
+
+    ⚠️ **`supports_push_heartbeat` 게이팅은 전제조건이다.** 확장이 없는 구버전 iOS
+    앱은 기존 gs_deadman 정시 로컬 알림을 그대로 갖고 있어, 이 푸시까지 받으면 같은
+    시각에 알림이 2개 뜬다. 대상이 고령 사용자라 그 혼란은 이 앱이 없애려는 문제
+    그 자체다. 새 클라만 플래그를 올리므로 구버전은 발송 대상에서 자동 제외된다.
+
+    부수 효과: 이 잡을 앱 배포보다 먼저 켜도 그 시점엔 플래그가 true인 기기가 없어
+    **실제 발송이 0건**이다. 앱이 퍼지며 점진 전환되고, 문제가 생기면 조건 한 줄로
+    전원 롤백된다.
+
+    쿼리 구조는 job_heartbeat_check와 동일하다(기기 로컬 타임존 기준 + 불량 zone은
+    pg_timezone_names LEFT JOIN으로 'Asia/Seoul' 폴백). 차이는 +120분 오프셋이 없다는 것뿐.
+    """
+    from database import get_pool
+    async with get_pool().acquire() as db:
+        targets = await db.fetch(
+            """SELECT d.device_id, d.fcm_token, d.locale
+               FROM users u
+               JOIN devices d ON u.id = d.user_id
+               LEFT JOIN pg_timezone_names z ON z.name = d.timezone
+               CROSS JOIN LATERAL (SELECT COALESCE(z.name, 'Asia/Seoul') AS tz) zz
+               WHERE u.invite_code IS NOT NULL
+                 AND d.platform = 'ios'
+                 AND d.supports_push_heartbeat = true
+                 AND d.fcm_token IS NOT NULL
+                 AND date_trunc('minute', now()) = date_trunc('minute',
+                       (date_trunc('day', now() AT TIME ZONE zz.tz)
+                          + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute)
+                       ) AT TIME ZONE zz.tz)
+                 AND d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz)""",
+        )
+
+    if not targets:
+        return
+
+    from services.push_service import push_heartbeat_trigger
+    for row in targets:
+        await push_heartbeat_trigger(row["fcm_token"], row["locale"] or "ko_KR")
+    logger.info("[iOS 트리거 푸시] 발송 — %d건", len(targets))
+
+
 def setup_scheduler() -> AsyncIOScheduler:
     # 잡 실행 예외를 단일 리스너로 포착해 Discord 알림으로 보낸다(매 분 도는 미수신
-    # 체크가 조용히 죽는 것을 방지). 5개 잡 전부 이 리스너 하나로 커버된다.
+    # 체크가 조용히 죽는 것을 방지). 6개 잡 전부 이 리스너 하나로 커버된다.
     scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
 
     # 각 잡을 advisory lock으로 감싼다 — 멀티 인스턴스에서 같은 시각에 여러 스케줄러가
     # fire해도 락을 잡은 하나만 실제로 실행되어 중복 push/중복 정리를 차단한다.
     scheduler.add_job(_singleton(LOCK_HEARTBEAT_CHECK)(job_heartbeat_check), CronTrigger(second=0), id="heartbeat_check", replace_existing=True)
     logger.info("스케줄러 등록: Heartbeat 미수신 체크 — 매 분 정각 실행")
+    scheduler.add_job(_singleton(LOCK_IOS_HB_TRIGGER)(job_ios_heartbeat_trigger), CronTrigger(second=0), id="ios_hb_trigger", replace_existing=True)
+    logger.info("스케줄러 등록: iOS heartbeat 트리거 푸시 — 매 분 정각 실행(예약시각 정각 발송)")
     scheduler.add_job(_singleton(LOCK_CLEANUP_NOTI)(job_cleanup_notifications), CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="cleanup_noti", replace_existing=True)
     logger.info("스케줄러 등록: 알림 자정 정리 — 매일 00:00 KST")
     scheduler.add_job(_singleton(LOCK_SUB_EXPIRE)(job_subscription_expire_check), CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="sub_expire", replace_existing=True)
