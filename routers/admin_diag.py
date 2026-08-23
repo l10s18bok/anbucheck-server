@@ -28,6 +28,7 @@ def _verify_admin(x_admin_key: str = Header(..., alias="X-Admin-Key")) -> None:
 @router.post("/admin/ios-heartbeat-trigger")
 async def ios_heartbeat_trigger(
     collapse: bool = Query(True, description="apns-collapse-id 부착 여부 — 전달 문제 A/B 진단용"),
+    dry_run: bool = Query(False, description="발송 없이 대상 상태만 조회 — 예약시각·플래그 확인용"),
     device_id: str | None = Query(None, description="특정 기기만. 생략 시 **정규 잡과 동일 조건**(확장 탑재 + G+S)의 iOS 기기"),
     _: None = Depends(_verify_admin),
     db: asyncpg.Connection = Depends(get_db),
@@ -54,7 +55,11 @@ async def ios_heartbeat_trigger(
 
     out = []
     for r in rows:
-        ok = await push_heartbeat_trigger(r["fcm_token"], r["locale"] or "ko_KR", collapse=collapse)
+        # dry_run이면 상태만 본다 — 예약시각/플래그를 확인하려고 실제 푸시를 쏘는 것은
+        # 사용자에게 불필요한 알림을 만드는 일이다.
+        ok = None if dry_run else await push_heartbeat_trigger(
+            r["fcm_token"], r["locale"] or "ko_KR", collapse=collapse
+        )
         out.append({
             "device_id": r["device_id"][:8] + "...",
             "fcm_token": (r["fcm_token"] or "")[:10] + "...",
@@ -64,5 +69,8 @@ async def ios_heartbeat_trigger(
             "is_gs": r["is_gs"],
             "sent": ok,
         })
-    logger.info("[진단] iOS 트리거 즉시 발사 — %d건 (collapse=%s)", len(out), collapse)
-    return {"collapse": collapse, "count": len(out), "targets": out}
+    if dry_run:
+        logger.info("[진단] iOS 트리거 대상 조회(dry-run) — %d건", len(out))
+    else:
+        logger.info("[진단] iOS 트리거 즉시 발사 — %d건 (collapse=%s)", len(out), collapse)
+    return {"dry_run": dry_run, "collapse": collapse, "count": len(out), "targets": out}
