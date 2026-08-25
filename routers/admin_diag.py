@@ -35,7 +35,25 @@ async def ios_heartbeat_trigger(
 ):
     rows = await db.fetch(
         """SELECT d.device_id, d.fcm_token, d.locale, d.heartbeat_hour, d.heartbeat_minute,
-                  d.last_seen, d.supports_push_heartbeat, u.invite_code IS NOT NULL AS is_gs
+                  d.last_seen, d.supports_push_heartbeat, u.invite_code IS NOT NULL AS is_gs,
+                  -- 정규 잡의 발사 조건이 계산하는 시각 3개를 그대로 노출한다.
+                  -- 산술(타임존 환산·오프셋)이 맞는지 로그를 뒤지지 않고 확인하기 위함.
+                  ARRAY(
+                    SELECT (date_trunc('day', now() AT TIME ZONE zz.tz)
+                             + make_interval(mins => d.heartbeat_hour * 60
+                                                    + d.heartbeat_minute + o)
+                           ) AT TIME ZONE zz.tz
+                    FROM unnest(ARRAY[0, 5, 10]) AS o
+                  ) AS trigger_times,
+                  -- 지금 이 순간의 오프셋(분). 잡이 발사하려면 이 값이 0/5/10이어야 한다.
+                  EXTRACT(EPOCH FROM (
+                    date_trunc('minute', now())
+                    - (date_trunc('day', now() AT TIME ZONE zz.tz)
+                         + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute)
+                      ) AT TIME ZONE zz.tz
+                  )) / 60 AS offset_now,
+                  (d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz))
+                    AS missing_today
            FROM users u
            JOIN devices d ON u.id = d.user_id
            WHERE d.platform = 'ios'
@@ -73,6 +91,9 @@ async def ios_heartbeat_trigger(
             r["device_id"],
         )
         out.append({
+            "trigger_times": [t.isoformat() for t in r["trigger_times"]],
+            "offset_now_min": float(r["offset_now"]),
+            "missing_today": r["missing_today"],
             "recent_logs": [
                 {"key": lg["scheduled_key"], "at": lg["server_ts"].isoformat()} for lg in logs
             ],
