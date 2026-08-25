@@ -60,7 +60,22 @@ async def ios_heartbeat_trigger(
         ok = None if dry_run else await push_heartbeat_trigger(
             r["fcm_token"], r["locale"] or "ko_KR", collapse=collapse
         )
+        # 오늘 그 기기의 heartbeat 기록 — 어떤 키로 몇 시에 들어왔는지.
+        # ⚠️ last_seen만 봐서는 "정시 안부"와 "회복 전송(recovery_)"이 구분되지 않는다.
+        # 서버는 회복 전송을 당일 안부로 치지 않는데(is_todays_report=False) last_seen은
+        # 갱신되므로, 진단할 때 둘을 반드시 분리해서 봐야 한다.
+        logs = await db.fetch(
+            """SELECT scheduled_key, server_ts
+               FROM heartbeat_logs
+               WHERE device_id = $1
+                 AND server_ts >= now() - interval '36 hours'
+               ORDER BY server_ts DESC LIMIT 10""",
+            r["device_id"],
+        )
         out.append({
+            "recent_logs": [
+                {"key": lg["scheduled_key"], "at": lg["server_ts"].isoformat()} for lg in logs
+            ],
             "device_id": r["device_id"][:8] + "...",
             "fcm_token": (r["fcm_token"] or "")[:10] + "...",
             "schedule": f'{r["heartbeat_hour"]:02d}:{r["heartbeat_minute"]:02d}',
