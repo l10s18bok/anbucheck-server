@@ -35,7 +35,22 @@ async def ios_heartbeat_trigger(
 ):
     rows = await db.fetch(
         """SELECT d.device_id, d.fcm_token, d.locale, d.heartbeat_hour, d.heartbeat_minute,
-                  d.last_seen, d.supports_push_heartbeat, u.invite_code IS NOT NULL AS is_gs
+                  d.last_seen, d.supports_push_heartbeat, u.invite_code IS NOT NULL AS is_gs,
+                  -- 정규 잡의 발사 조건이 계산하는 값을 그대로 노출한다.
+                  -- ⚠️ 서브쿼리로 감싸지 말 것 — ARRAY(SELECT ... FROM unnest(...))로 쓰면
+                  -- 그 안에서 바깥 LATERAL 별칭 zz가 보이지 않아
+                  -- "missing FROM-clause entry for table zz"로 죽는다(2026-08-26 실측).
+                  (date_trunc('day', now() AT TIME ZONE zz.tz)
+                     + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute)
+                  ) AT TIME ZONE zz.tz AS fire_0,
+                  (date_trunc('day', now() AT TIME ZONE zz.tz)
+                     + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute + 5)
+                  ) AT TIME ZONE zz.tz AS fire_5,
+                  (date_trunc('day', now() AT TIME ZONE zz.tz)
+                     + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute + 10)
+                  ) AT TIME ZONE zz.tz AS fire_10,
+                  (d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz))
+                    AS missing_today
            FROM users u
            JOIN devices d ON u.id = d.user_id
            WHERE d.platform = 'ios'
@@ -73,6 +88,8 @@ async def ios_heartbeat_trigger(
             r["device_id"],
         )
         out.append({
+            "fire_times": [r["fire_0"].isoformat(), r["fire_5"].isoformat(), r["fire_10"].isoformat()],
+            "missing_today": r["missing_today"],
             "recent_logs": [
                 {"key": lg["scheduled_key"], "at": lg["server_ts"].isoformat()} for lg in logs
             ],
