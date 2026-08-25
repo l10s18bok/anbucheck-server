@@ -37,9 +37,8 @@ async def ios_heartbeat_trigger(
         """SELECT d.device_id, d.fcm_token, d.locale, d.heartbeat_hour, d.heartbeat_minute,
                   d.last_seen, d.supports_push_heartbeat, u.invite_code IS NOT NULL AS is_gs,
                   -- 정규 잡의 발사 조건이 계산하는 값을 그대로 노출한다.
-                  -- ⚠️ 서브쿼리로 감싸지 말 것 — ARRAY(SELECT ... FROM unnest(...))로 쓰면
-                  -- 그 안에서 바깥 LATERAL 별칭 zz가 보이지 않아
-                  -- "missing FROM-clause entry for table zz"로 죽는다(2026-08-26 실측).
+                  -- zz.tz는 아래 CROSS JOIN LATERAL에서 정의된다(기기 타임존, 불량 값은
+                  -- 'Asia/Seoul' 폴백). 표현식만 옮겨 오고 조인을 빠뜨리면 죽는다.
                   (date_trunc('day', now() AT TIME ZONE zz.tz)
                      + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute)
                   ) AT TIME ZONE zz.tz AS fire_0,
@@ -53,6 +52,11 @@ async def ios_heartbeat_trigger(
                     AS missing_today
            FROM users u
            JOIN devices d ON u.id = d.user_id
+           -- ⚠️ 타임존 표현식(zz.tz)을 쓰려면 이 두 줄이 **반드시** 함께 있어야 한다.
+           -- 2026-08-26: 스케줄러 쿼리에서 표현식만 복사해 오고 이 조인을 빠뜨려
+           -- "missing FROM-clause entry for table zz"로 두 번 연속 500을 냈다.
+           LEFT JOIN pg_timezone_names z ON z.name = d.timezone
+           CROSS JOIN LATERAL (SELECT COALESCE(z.name, 'Asia/Seoul') AS tz) zz
            WHERE d.platform = 'ios'
              AND d.fcm_token IS NOT NULL
              -- ⚠️ **정규 잡과 동일한 대상 조건을 반드시 포함한다.**
