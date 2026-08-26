@@ -381,16 +381,24 @@ async def job_ios_heartbeat_trigger() -> None:
     ⚠️ **+2h가 아니라 정각이다.** 미수신 체크(job_heartbeat_check, +2h)보다 먼저
     도착해야 그날의 안부가 제때 전달되고 거짓 미수신 경고가 나가지 않는다.
 
-    ⚠️ **정각 1회로 끝내지 않고 +5분·+10분에 재시도한다.** 2026-08-23 06:00 실측:
-    06:00:10 트리거 푸시가 기기에 도달하지 않았는데, 29초 뒤 같은 토큰으로 보낸 보호자
-    알림은 06:01에 정상 표시됐다. APNs는 기기가 도달 불가일 때 **토큰당 최신 알림 하나만
-    보관**하므로, 뒤에 온 보호자 알림이 보관돼 있던 트리거 푸시를 덮어쓴 것으로 보인다
-    (같은 날 07:01 잠금·화면 꺼짐 상태 재현에서는 1.8초 만에 확장이 실행됐다 — 수면
-    상태 자체는 원인이 아니다).
+    ⚠️ **정각 1회만 보낸다. 재시도를 넣지 말 것.**
 
-    재시도가 안전한 이유: 첫 발사가 성공하면 last_seen이 갱신돼 조건이 깨지므로 **자동으로
-    멈춘다**. 여러 번 나가더라도 `apns-collapse-id` 덕에 사용자에게 보이는 알림은 하나로
-    대체된다. +15분에는 클라의 오프라인 폴백이 발화하므로 재시도는 그 전까지만 한다.
+    한때 +5분·+10분 재시도를 넣었다가 되돌렸다(2026-08-26). 이유:
+
+    · **재시도는 잠든 기기를 깨우지 못한다.** 푸시는 기기를 깨우는 수단이 아니라,
+      APNs가 보관하고 있다가 **기기가 스스로 깨어날 때** 전달되는 것이다. 몇 번을 더
+      보내든 깨어나는 시점은 달라지지 않는다.
+    · 유일한 이득은 **APNs 보관 슬롯 재확보**였다(앱당 1칸이라 다른 푸시가 오면 우리
+      것이 버려진다). 그런데 마지막 재시도 뒤에 알림이 하나만 더 와도 다시 밀리므로
+      **확률을 조금 낮출 뿐 없애지 못한다.**
+    · 그리고 그 덮어쓰기 가설 자체가 **아직 확정되지 않았다** — 2026-08-23에 29초 간격
+      두 건 중 나중 것만 도착한 관측과 APNs 문서가 맞아떨어질 뿐, 내부를 직접 본 것은 아니다.
+    · **사용자 유도는 이미 보장돼 있다.** 트리거가 유실된 날에도 클라의 오프라인 폴백
+      알림(예약시각 +15분)이 발화한다. 알림이 필요한 순간에 알림은 반드시 뜬다.
+
+    이 한 번의 발사가 **자동 전송과 사용자 유도를 겸한다** — 기기가 깨어 있으면 확장이
+    탭 없이 보내고, 아니면 깨어나는 순간 전달되거나 원본 문구(탭 유도)가 표시된다.
+    실패해도 최악이 기존 동작이라는 원칙이 여기서도 유지된다.
 
     ⚠️ **`supports_push_heartbeat` 게이팅은 전제조건이다.** 확장이 없는 구버전 iOS
     앱은 기존 gs_deadman 정시 로컬 알림을 그대로 갖고 있어, 이 푸시까지 받으면 같은
@@ -416,13 +424,11 @@ async def job_ios_heartbeat_trigger() -> None:
                  AND d.platform = 'ios'
                  AND d.supports_push_heartbeat = true
                  AND d.fcm_token IS NOT NULL
-                 -- 정각 / +5분 / +10분 재시도. 아래 주석의 이유로 1회 발사는 유실될 수 있다.
-                 AND EXTRACT(EPOCH FROM (
-                       date_trunc('minute', now())
-                       - (date_trunc('day', now() AT TIME ZONE zz.tz)
-                            + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute)
-                         ) AT TIME ZONE zz.tz
-                     )) / 60 IN (0, 5, 10)
+                 -- 예약시각 정각에 **1회만** 발사한다(재시도 없음 — 아래 주석 참조).
+                 AND date_trunc('minute', now()) = date_trunc('minute',
+                       (date_trunc('day', now() AT TIME ZONE zz.tz)
+                          + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute)
+                       ) AT TIME ZONE zz.tz)
                  AND d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz)""",
         )
 
