@@ -347,11 +347,35 @@ async def push_manual_report(fcm_token: str, subject_user_id: int, sound: Option
     )
 
 
-async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR", alias: str | None = None) -> bool:
+async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR", alias: str | None = None, steps: int | None = None) -> bool:
+    """정상 상태 자동 안부 확인 Push.
+
+    본문은 걸음수가 있으면 "오늘 N보를 걸으셨습니다"로 나간다 — 보호자에게는
+    "정상 수신되었습니다"보다 그날 무엇을 했는지가 더 구체적인 안심 신호이기 때문.
+    제목("✅ 오늘 안부 확인 완료")은 바꾸지 않는다 — 다른 ✅ 계열 제목
+    (정상 복귀·수동 안부 확인·안부 확인 완료)과 체계를 맞춰 둔 것이다.
+
+    ⚠️ **걸음수 가드는 heartbeat_service의 steps 알림 조건과 문자 그대로 같아야 한다**
+    (`steps_delta is not None and steps_delta > 0`, heartbeat_service._save_steps_info_notification
+    호출부). steps==0인데 suspicious==false인 상태는 실제로 도달 가능하다 — worker
+    발화 시점에 화면이 켜져 있으면(`isInteractiveAtTrigger=true`) 걸음이 0이어도
+    정상으로 판정된다. 그때 "오늘 0보를 걸으셨습니다"가 나가면 안전 알림이 거짓
+    안심 문구가 된다. 걸음수 권한 거부(None)도 마찬가지다. 두 경우 모두 기존
+    정형 문구로 폴백한다. 가드를 두 곳에서 다르게 쓰면 푸시는 걸음수를 말하는데
+    앱 알림 목록에는 걸음수 카드가 없는 불일치가 생긴다.
+
+    ⚠️ notification_events에 저장되는 본문은 바꾸지 않는다 — 그 행은 대상자당 1건을
+    모든 보호자가 공유하고, 앱 알림 목록은 message_key로 자체 번역해 그린다.
+    보호자별로 달라지는 렌더링(별칭·걸음수)은 push_* 안에서만 일어난다.
+    """
+    if steps is not None and steps > 0:
+        body = get_message(locale, "noti_steps_body", steps=f"{steps:,}")
+    else:
+        body = get_message(locale, "push_auto_report_body")
     return await send_push(
         fcm_token,
         title=get_message(locale, "push_auto_report_title"),
-        body=decorate_body(get_message(locale, "push_auto_report_body"), alias),
+        body=decorate_body(body, alias),
         data={"type": "auto_report", "subject_user_id": str(subject_user_id), "invite_code": invite_code or ""},
         sound=sound,
     )

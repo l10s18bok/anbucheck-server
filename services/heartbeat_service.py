@@ -312,7 +312,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             # 보내는 살아있음 신호다. 경고 해소는 하되 "오늘 안부 확인 완료"는 보내지
             # 않는다. 보내면 몇 시간 뒤 정시 전송에서 같은 알림이 한 번 더 나간다.
             if not serious_resolved and is_todays_report:
-                await _send_auto_report_to_guardians(db, user_id)
+                await _send_auto_report_to_guardians(db, user_id, steps_delta)
 
         # 활동 감지 알림 — 자동 heartbeat + 당일 첫 수신 + steps_delta > 0일 때만.
         # 수동 보고는 "수동 안부 확인" 알림이 이미 있으므로 steps 알림 중복 생략.
@@ -425,8 +425,22 @@ async def _send_battery_low_to_guardians(db: asyncpg.Connection, user_id: int) -
     )
 
 
-async def _send_auto_report_to_guardians(db: asyncpg.Connection, user_id: int) -> None:
-    """정상 상태 자동 안부 확인 — 이벤트 1건 저장 + 보호자별 Push 전송"""
+async def _send_auto_report_to_guardians(
+    db: asyncpg.Connection,
+    user_id: int,
+    steps_delta: int | None = None,
+) -> None:
+    """정상 상태 자동 안부 확인 — 이벤트 1건 저장 + 보호자별 Push 전송
+
+    steps_delta는 **Push 본문에만** 쓴다 — 걸음수가 있으면 "오늘 N보를 걸으셨습니다"로
+    나가 보호자가 안심할 근거를 더 구체적으로 받는다. 가드(`> 0`)는 push_auto_report
+    안에 있고, 아래 _save_steps_info_notification 호출부의 조건과 문자 그대로 같아야
+    한다(상세는 push_service.push_auto_report docstring).
+
+    ⚠️ notification_events 저장 본문은 그대로 둔다 — 그 행은 대상자당 1건을 모든
+    보호자가 공유하고 앱 알림 목록은 message_key로 자체 번역해 그리므로, 여기에
+    걸음수를 넣으면 DB와 화면이 조용히 갈라진다.
+    """
     invite_code = await _get_invite_code(db, user_id)
     guardians = await _get_active_guardians(db, user_id)
 
@@ -439,7 +453,7 @@ async def _send_auto_report_to_guardians(db: asyncpg.Connection, user_id: int) -
     )
     await _push_to_guardians(
         db, guardians, "info",
-        lambda token, locale, alias: push_service.push_auto_report(token, user_id, invite_code=invite_code, locale=locale, alias=alias),
+        lambda token, locale, alias: push_service.push_auto_report(token, user_id, invite_code=invite_code, locale=locale, alias=alias, steps=steps_delta),
     )
 
 

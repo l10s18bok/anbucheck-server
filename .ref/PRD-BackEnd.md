@@ -268,9 +268,9 @@ heartbeat 수신 → last_seen 갱신
   "data": { "type": "alert_emergency", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
 }
 
-// 정보 등급 — 자동 heartbeat 정상 수신
+// 정보 등급 — 자동 heartbeat 정상 수신 (본문은 걸음수가 있으면 그것으로 대체, 아래 참조)
 {
-  "notification": { "title": "✅ 오늘 안부 확인 완료", "body": "대상자의 오늘 안부 확인이 정상 수신되었습니다." },
+  "notification": { "title": "✅ 오늘 안부 확인 완료", "body": "삼촌 · 오늘 1,234보를 걸으셨습니다." },
   "data": { "type": "auto_report", "subject_user_id": "1", "invite_code": "K7M-4PXR" }
 }
 
@@ -599,7 +599,12 @@ Response: 200 OK
     - caution / warning / urgent 중 **하나라도** 해소 → "정상 복귀" Push (auto_report 중복이라 스킵)
     - info(배터리)만 해소 또는 해소 없음:
       - `manual = true` → "수동 안부 확인" Push (사용자 의도적 액션이라 매번 발송, is_first_today 가드 없음)
-      - `manual = false AND is_first_today` → "오늘 안부 확인 완료" Push (당일 1회) + `steps_delta > 0`이면 활동 정보 알림 동시 생성 (당일 1회)
+      - `manual = false` → "오늘 안부 확인 완료" Push. **가드는 `not serious_resolved and is_todays_report`뿐이며 `is_first_today`는 걸려 있지 않다**
+        - 추가로 `steps_delta > 0`이면 활동 정보 알림(`message_key="steps"`, Push 없음) 생성 — **`is_first_today`로 당일 1회인 것은 이쪽뿐이다**
+        - ⚠️ 그래서 같은 날 auto_report가 두 번 나가는 경로(낮에 예약시각을 바꿔 새 `scheduled_key`로 정시 전송)에서는 **걸음수가 다른 본문이 두 번** 도착한다. 두 값 모두 그 시점의 참이고 경로 자체가 드물어 현행 유지다 — **`is_first_today`를 auto_report에 붙이지 말 것.** 붙이면 경고 해소 후 재전송 같은 정상 경로가 조용히 죽는다
+        - **Push 본문은 걸음수가 있으면 `noti_steps_body`("오늘 N보를 걸으셨습니다")로 나간다** — 보호자에게는 "정상 수신되었습니다"보다 그날 무엇을 했는지가 더 구체적인 안심 신호다. 제목은 그대로(`✅ 오늘 안부 확인 완료`) — 다른 ✅ 계열(정상 복귀·수동 안부 확인·안부 확인 완료)과 체계를 맞춰 둔 것이라 여기만 바꾸면 보호자가 날에 따라 다른 제목을 보게 된다
+        - ⚠️ **걸음수 가드는 `steps` 알림 생성 조건과 문자 그대로 같아야 한다**(`steps_delta is not None and steps_delta > 0`). `steps == 0`인데 `suspicious == false`인 상태는 실제로 도달 가능하다 — worker 발화 시점에 화면이 켜져 있으면(`isInteractiveAtTrigger=true`) 걸음이 0이어도 정상으로 판정된다. 그때 "오늘 0보를 걸으셨습니다"가 나가면 안전 알림이 거짓 안심 문구가 된다. 걸음수 권한 거부(`None`)도 같다. 두 경우 모두 기존 `push_auto_report_body`로 폴백한다. 두 곳의 가드가 갈라지면 **Push는 걸음수를 말하는데 앱 알림 목록에는 걸음수 카드가 없는** 불일치가 생긴다
+        - ⚠️ `notification_events`에 저장하는 본문은 **바꾸지 않는다**(`push_auto_report_body` 그대로) — 그 행은 대상자당 1건을 모든 보호자가 공유하고, 앱 알림 목록은 저장된 body가 아니라 `message_key`로 자체 번역해 그린다. 보호자별로 달라지는 렌더링(별칭·걸음수)은 `push_*` 안에서만 일어난다는 규칙(§6.7)의 연장이다. 결과적으로 앱 목록에는 `auto_report` 카드와 `steps` 카드가 그대로 둘 다 남는다(수용)
   - `suspicious` = true:
     - 기존 warning/urgent 경고 → caution으로 하향 (정상 복귀 알림 없음)
     - suspicious_count=1 → caution 등급 + `message_key="caution_suspicious"` + `push_caution(reason="suspicious")` (중복 방지)
@@ -1852,6 +1857,10 @@ print(f'통과 {ok}건'); [print(' ✗', b) for b in bad]
 ⚠️ **`notification_events` 저장 경로에는 별칭을 넣지 않는다** — 대상자당 1행을 모든 보호자가 공유하는데 별칭은 보호자마다 다르다. 부착은 보호자별 `push_*` 함수 안에서만 일어난다.
 
 **alias 미적용 대상(의도)**: `push_subject_safety_net`(대상자 본인에게 감), `push_subscription_expired`·`push_subscription_grace_period`(특정 대상자와 무관). 대칭성을 이유로 붙이지 말 것.
+
+**본문이 고정 문구가 아닌 두 경우** — 별칭 프리픽스는 **치환 후** 붙으므로 두 경우 모두 `별칭 · 원문` 형태가 된다:
+- `push_auto_report`: 걸음수가 있으면(`steps > 0`) 본문이 `noti_steps_body`("오늘 N보를 걸으셨습니다")로 대체된다. 가드·폴백·`notification_events` 미변경 규칙은 §4.6 참조. 번역은 `noti_steps_body`가 이미 20개 로케일에 있어 신규 문구가 없다
+- `push_emergency`: 대상자가 남긴 메시지가 있으면 본문이 그 원문으로 치환된다(방식 A)
 
 신규로 보호자 전원에게 Push를 보내는 쿼리를 추가할 때도 동일 규칙을 적용한다.
 
