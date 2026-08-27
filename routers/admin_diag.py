@@ -30,6 +30,15 @@ async def ios_heartbeat_trigger(
     collapse: bool = Query(True, description="apns-collapse-id 부착 여부 — 전달 문제 A/B 진단용"),
     dry_run: bool = Query(False, description="발송 없이 대상 상태만 조회 — 예약시각·플래그 확인용"),
     device_id: str | None = Query(None, description="특정 기기만. 생략 시 **정규 잡과 동일 조건**(확장 탑재 + G+S)의 iOS 기기"),
+    push_type: str = Query(
+        "heartbeat",
+        description=(
+            "heartbeat = 트리거 푸시(기본) / manual_report = 피기백 검증용 보호자 알림. "
+            "피기백(확장이 트리거 아닌 푸시에 안부를 얹어 보내는 것)은 대상자가 실제로 "
+            "보고해야 재현되는데, 그러려면 안드로이드 테스트폰을 깨워야 해서 그쪽 "
+            "standby 버킷 관측이 오염된다. 그래서 같은 종류의 푸시를 서버에서 직접 쏜다."
+        ),
+    ),
     _: None = Depends(_verify_admin),
     db: asyncpg.Connection = Depends(get_db),
 ):
@@ -70,15 +79,25 @@ async def ios_heartbeat_trigger(
         device_id,
     )
 
-    from services.push_service import push_heartbeat_trigger
+    from services.push_service import push_heartbeat_trigger, push_manual_report
 
     out = []
     for r in rows:
         # dry_run이면 상태만 본다 — 예약시각/플래그를 확인하려고 실제 푸시를 쏘는 것은
         # 사용자에게 불필요한 알림을 만드는 일이다.
-        ok = None if dry_run else await push_heartbeat_trigger(
-            r["fcm_token"], r["locale"] or "ko_KR", collapse=collapse
-        )
+        if dry_run:
+            ok = None
+        elif push_type == "manual_report":
+            # 피기백 검증 전용. 확장의 허용목록에 든 타입이라, 오늘 안부가 아직
+            # 나가지 않았으면 확장이 이 푸시에 안부를 얹어 보내야 한다.
+            # (본문은 원본 그대로 배달되는 것이 정상 — 훼손되면 피기백 규칙 위반이다.)
+            ok = await push_manual_report(
+                r["fcm_token"], 0, locale=r["locale"] or "ko_KR"
+            )
+        else:
+            ok = await push_heartbeat_trigger(
+                r["fcm_token"], r["locale"] or "ko_KR", collapse=collapse
+            )
         # 오늘 그 기기의 heartbeat 기록 — 어떤 키로 몇 시에 들어왔는지.
         # ⚠️ last_seen만 봐서는 "정시 안부"와 "회복 전송(recovery_)"이 구분되지 않는다.
         # 서버는 회복 전송을 당일 안부로 치지 않는데(is_todays_report=False) last_seen은
