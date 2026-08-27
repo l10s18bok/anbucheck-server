@@ -263,7 +263,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "push_subscription_grace_period_title": "Anbu",
         "push_subscription_grace_period_body": "Le paiement a échoué. Les notifications pourraient bientôt s'arrêter. Veuillez vérifier votre moyen de paiement.",
         "noti_steps_title": "🚶 Activité",
-        "noti_steps_body": "{steps} pas effectues aujourd'hui.",
+        "noti_steps_body": "{steps} pas effectués aujourd'hui.",
         "push_emergency_title": "🚨 Demande d'aide urgente",
         "push_emergency_body": "La personne suivie a demandé de l'aide. Veuillez vérifier immédiatement.",
         "push_alert_cleared_title": "✅ Vérification confirmée",
