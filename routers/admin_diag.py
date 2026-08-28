@@ -48,15 +48,12 @@ async def ios_heartbeat_trigger(
                   -- 정규 잡의 발사 조건이 계산하는 값을 그대로 노출한다.
                   -- zz.tz는 아래 CROSS JOIN LATERAL에서 정의된다(기기 타임존, 불량 값은
                   -- 'Asia/Seoul' 폴백). 표현식만 옮겨 오고 조인을 빠뜨리면 죽는다.
+                  -- ⚠️ 정규 잡은 **정각 1회만** 발사한다(재시도 없음). 한때 +5/+10분
+                  -- 재시도가 있어 여기에 세 값을 노출했는데, 그 잔재를 보고 "재시도가
+                  -- 아직 살아 있다"고 오독하는 일이 실제로 있었다. 하나만 남긴다.
                   (date_trunc('day', now() AT TIME ZONE zz.tz)
                      + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute)
-                  ) AT TIME ZONE zz.tz AS fire_0,
-                  (date_trunc('day', now() AT TIME ZONE zz.tz)
-                     + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute + 5)
-                  ) AT TIME ZONE zz.tz AS fire_5,
-                  (date_trunc('day', now() AT TIME ZONE zz.tz)
-                     + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute + 10)
-                  ) AT TIME ZONE zz.tz AS fire_10,
+                  ) AT TIME ZONE zz.tz AS fire_time,
                   (d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz))
                     AS missing_today
            FROM users u
@@ -111,7 +108,7 @@ async def ios_heartbeat_trigger(
             r["device_id"],
         )
         out.append({
-            "fire_times": [r["fire_0"].isoformat(), r["fire_5"].isoformat(), r["fire_10"].isoformat()],
+            "fire_time": r["fire_time"].isoformat(),
             "missing_today": r["missing_today"],
             "recent_logs": [
                 {"key": lg["scheduled_key"], "at": lg["server_ts"].isoformat()} for lg in logs
@@ -127,5 +124,11 @@ async def ios_heartbeat_trigger(
     if dry_run:
         logger.info("[진단] iOS 트리거 대상 조회(dry-run) — %d건", len(out))
     else:
-        logger.info("[진단] iOS 트리거 즉시 발사 — %d건 (collapse=%s)", len(out), collapse)
+        # ⚠️ 어떤 종류를 쐈는지 반드시 남긴다. 로그가 항상 "트리거"로 찍히던 탓에
+        # manual_report를 발사하고도 트리거로 오독하는 일이 있었다.
+        logger.info(
+            "[진단] iOS %s 즉시 발사 — %d건 (collapse=%s)",
+            "manual_report" if push_type == "manual_report" else "트리거",
+            len(out), collapse,
+        )
     return {"dry_run": dry_run, "collapse": collapse, "count": len(out), "targets": out}
