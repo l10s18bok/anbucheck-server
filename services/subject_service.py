@@ -321,6 +321,98 @@ async def get_step_history_for_subject(
     )
 
 
+async def _get_own_device_row(db: asyncpg.Connection, user_id: int):
+    """본인 계정의 최신 기기 행 + 가입 시각. 없으면 404."""
+    row = await db.fetchrow(
+        """SELECT u.created_at, d.device_id, d.timezone
+           FROM users u
+           LEFT JOIN devices d ON d.id = (
+               SELECT id FROM devices WHERE user_id = u.id ORDER BY updated_at DESC LIMIT 1
+           )
+           WHERE u.id = $1""",
+        user_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="사용자를 찾을 수 없습니다")
+    return row
+
+
+async def record_steps_snapshot(
+    db: asyncpg.Connection,
+    user_id: int,
+    steps_delta: int,
+    days: int,
+) -> list[int | None]:
+    """[내 걸음수] 버튼 — 그 시점까지의 당일 누적 걸음수를 적재하고 N일 이력을 돌려준다.
+
+    ⚠️ **이것은 안부 보고가 아니다.** 다음 셋을 의도적으로 하지 않는다:
+      · devices.last_seen 갱신 — 갱신하면 버튼을 누른 것만으로 미수신 체크(+2h)가
+        무력화되어 대상자 안전망 푸시와 보호자 경고가 조용히 사라진다. 걸음수 조회가
+        안부 보고를 대신했다고 착각하게 만드는 방향이라 "일관성 수정"으로 합치지 말 것.
+      · devices.steps_delta / suspicious_count 갱신 — 안부 판정 입력값이다.
+      · 보호자 Push(auto_report / steps) 발송.
+
+    적재는 heartbeat_logs에 "steps_<기기 로컬 날짜>" 키로 **하루 1행**만 남긴다.
+    걸음수는 자정 누적값이라 단조 증가하므로 GREATEST로 최댓값만 유지하며, 나중에 도착한
+    진짜 heartbeat가 더 크면 차트의 MAX 집계에서 자연히 그쪽이 이긴다.
+    이 행은 heartbeat_service의 is_first_today 판정에서 제외된다(steps% 예외).
+    """
+    row = await _get_own_device_row(db, user_id)
+    device_id = row["device_id"]
+    if not device_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="기기 정보를 찾을 수 없습니다")
+
+    try:
+        tz = ZoneInfo(row["timezone"] or "Asia/Seoul")
+    except Exception:
+        tz = ZoneInfo("Asia/Seoul")
+    now_local = datetime.now(tz)
+    key = f"steps_{now_local.date().isoformat()}"
+
+    # ON CONFLICT 대상이 partial unique index라 추론 조건(WHERE)까지 그대로 적어야 한다.
+    await db.execute(
+        """INSERT INTO heartbeat_logs
+           (device_id, steps_delta, suspicious, battery_level, client_ts, server_ts, scheduled_key)
+           VALUES ($1, $2, 0, NULL, $3, NOW(), $4)
+           ON CONFLICT (device_id, scheduled_key) WHERE scheduled_key IS NOT NULL
+           DO UPDATE SET steps_delta = GREATEST(
+               COALESCE(heartbeat_logs.steps_delta, 0), EXCLUDED.steps_delta
+           )""",
+        device_id,
+        steps_delta,
+        now_local.isoformat(),
+        key,
+    )
+
+    return await get_step_history(
+        db,
+        device_id=device_id,
+        tz_name=row["timezone"] or "Asia/Seoul",
+        user_created_at=row["created_at"],
+        days=days,
+    )
+
+
+async def get_step_history_for_self(
+    db: asyncpg.Connection,
+    user_id: int,
+    days: int,
+) -> list[int | None]:
+    """본인(대상자 또는 G+S 보호자)의 N일 걸음수 이력.
+
+    보호자용 get_step_history_for_subject는 guardians 링크 검증이 필수인데, 자기 자신은
+    self-link이 막혀 있어 그 링크가 존재하지 않는다. 그래서 별도 진입점이 필요하다.
+    """
+    row = await _get_own_device_row(db, user_id)
+    return await get_step_history(
+        db,
+        device_id=row["device_id"],
+        tz_name=row["timezone"] or "Asia/Seoul",
+        user_created_at=row["created_at"],
+        days=days,
+    )
+
+
 async def _get_active_alert(db: asyncpg.Connection, subject_user_id: int) -> dict | None:
     row = await db.fetchrow(
         "SELECT id, alert_level, days_inactive FROM alerts WHERE subject_user_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1",

@@ -225,6 +225,9 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     # 같은 날 "오늘 N보"가 두 번 발송된다(방금 클라 쪽에서 고친 것과 똑같은 종류의 불일치).
     # 날짜 문자열은 YYYY-MM-DD라 사전순 비교가 날짜순과 일치한다.
     # recovery_는 접두사가 날짜보다 사전순으로 뒤라 `>=`를 통과하므로 명시적으로 제외한다.
+    # steps_(걸음수 스냅샷)도 같은 이유로 제외한다 — left('steps_2026-08-28',10)='steps_2026'이고
+    # 's' > '2'라 `>=` 비교를 통과해 버린다. 제외하지 않으면 사용자가 [내 걸음수]를 한 번만
+    # 눌러도 그날 auto_report와 "오늘 N보" 알림이 통째로 사라진다.
     # 수동 보고는 key가 NULL이며 기존과 동일하게 당일 기록으로 카운트한다.
     is_first_today = await db.fetchval(
         """WITH safe AS (
@@ -242,6 +245,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
                      scheduled_key IS NULL
                      OR (
                          scheduled_key NOT LIKE 'recovery%'
+                         AND scheduled_key NOT LIKE 'steps%'
                          AND left(scheduled_key, 10) >= to_char((now() AT TIME ZONE safe.tz)::date, 'YYYY-MM-DD')
                      )
                  )

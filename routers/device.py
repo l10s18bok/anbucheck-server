@@ -1,10 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 import asyncpg
 
-from config import HEARTBEAT_HOUR_MIN, HEARTBEAT_HOUR_MAX
+from config import HEARTBEAT_HOUR_MIN, HEARTBEAT_HOUR_MAX, STEPS_RATE_LIMIT
 from database import get_db
-from middleware.auth import get_current_user
-from models.device import FcmTokenIn, HeartbeatScheduleIn, HeartbeatScheduleOut, DeviceInfoOut
+from middleware import rate_limit
+from middleware.auth import get_current_user, require_subject_feature
+from models.device import (
+    FcmTokenIn, HeartbeatScheduleIn, HeartbeatScheduleOut, DeviceInfoOut, StepsSnapshotIn,
+)
+from models.guardian import StepHistoryOut
+from services.subject_service import record_steps_snapshot
 
 router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 
@@ -150,3 +155,26 @@ async def update_heartbeat_schedule(
         heartbeat_minute=m,
         message="heartbeat 시각이 변경되었습니다. 다음 확인부터 적용됩니다.",
     )
+
+
+@router.post("/me/steps", response_model=StepHistoryOut)
+async def sync_my_steps(
+    body: StepsSnapshotIn,
+    user: dict = Depends(require_subject_feature),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    """[내 걸음수] — 지금까지의 당일 걸음수를 적재하고 최근 N일 이력을 돌려준다.
+
+    ⚠️ **안부 보고(POST /heartbeat)와 별개 경로다.** 이 요청은 last_seen을 갱신하지 않고
+    보호자 Push도 보내지 않는다 — 사용자가 걸음수를 확인한 것과 "오늘 안부가 확인됐다"는
+    것은 다른 사실이며, 전자로 후자를 대신하면 미수신 체크(+2h)와 보호자 경고가 조용히
+    사라진다. 자세한 근거는 services.subject_service.record_steps_snapshot 참조.
+
+    인증은 require_subject_feature — 대상자 또는 invite_code를 가진 G+S 보호자.
+    구독 상태로 게이팅하지 않는다(본인 데이터이며, 앱이 버튼 자체를 숨긴다).
+    """
+    await rate_limit.enforce(db, f"steps:{user['user_id']}", STEPS_RATE_LIMIT)
+    history = await record_steps_snapshot(
+        db, user_id=user["user_id"], steps_delta=body.steps_delta, days=body.days,
+    )
+    return StepHistoryOut(step_history=history)

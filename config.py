@@ -51,6 +51,7 @@ FREE_TRIAL_DAYS = 90
 # Rate limit (requests per 60s window)
 LINK_RATE_LIMIT = int(os.getenv("LINK_RATE_LIMIT", "5"))           # /subjects/link — 보호자(user_id) 기준
 REGISTER_RATE_LIMIT = int(os.getenv("REGISTER_RATE_LIMIT", "10"))  # POST /users — 클라이언트 IP 기준
+STEPS_RATE_LIMIT = int(os.getenv("STEPS_RATE_LIMIT", "10"))        # POST /devices/me/steps — 본인(user_id) 기준
 
 # ─────────────────────────────────────────
 # 인앱 결제 영수증 검증

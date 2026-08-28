@@ -99,11 +99,14 @@ async def ios_heartbeat_trigger(
         # ⚠️ last_seen만 봐서는 "정시 안부"와 "회복 전송(recovery_)"이 구분되지 않는다.
         # 서버는 회복 전송을 당일 안부로 치지 않는데(is_todays_report=False) last_seen은
         # 갱신되므로, 진단할 때 둘을 반드시 분리해서 봐야 한다.
+        # steps_(걸음수 스냅샷)는 안부와 무관한 사용자 조작이라 이 목록에서 제외한다 —
+        # 섞이면 "오늘 안부가 도착했는가" 판독이 오염된다.
         logs = await db.fetch(
             """SELECT scheduled_key, server_ts
                FROM heartbeat_logs
                WHERE device_id = $1
                  AND server_ts >= now() - interval '36 hours'
+                 AND (scheduled_key IS NULL OR scheduled_key NOT LIKE 'steps%')
                ORDER BY server_ts DESC LIMIT 10""",
             r["device_id"],
         )

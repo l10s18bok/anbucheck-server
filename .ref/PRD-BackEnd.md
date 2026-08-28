@@ -306,7 +306,7 @@ server/
 │   ├── heartbeat.py                # POST /api/v1/heartbeat
 │   ├── subject.py                  # POST /api/v1/subjects/link, GET /api/v1/subjects, DELETE unlink
 │   ├── alert.py                    # GET /api/v1/alerts, PUT clear, PUT clear-all
-│   ├── device.py                   # GET /api/v1/devices/me, PUT fcm-token, PATCH/PUT heartbeat-schedule
+│   ├── device.py                   # GET /api/v1/devices/me, POST me/steps, PUT fcm-token, PATCH/PUT heartbeat-schedule
 │   ├── app_version.py              # GET /api/v1/app/version-check, PUT/GET /api/v1/admin/app-version
 │   ├── subscription.py             # GET/POST /api/v1/subscription
 │   ├── guardian_notification_settings.py  # GET/PUT /api/v1/guardian/notification-settings
@@ -1007,6 +1007,45 @@ Response: 200 OK
   - `expired`: 서버 스케줄러가 만료 시 자동 변경
 - `guardian_count`: 대상자에 연결된 보호자 수
 - 앱 포그라운드 진입 시 서버 스케줄 동기화 용도
+
+
+### 4.17.1 걸음수 스냅샷 ([내 걸음수] 버튼)
+```
+POST /api/v1/devices/me/steps
+Headers:
+  Authorization: Bearer <device_token>
+Body:
+{
+  "steps_delta": 3421,      // 0 ~ 200000, 그 시점까지의 당일 누적 걸음수
+  "days": 30                // 7 ~ 30 (기본 30)
+}
+Response: 200 OK
+{
+  "step_history": [null, 0, 1200, ..., 3421]   // index 0 = (days-1)일 전, 마지막 = 오늘
+}
+```
+
+- 인증: `require_subject_feature` — 대상자 또는 invite_code를 가진 G+S 보호자
+- 구독 상태로 게이팅하지 않는다(본인 데이터. 앱이 만료 시 버튼 자체를 숨긴다)
+- rate limit: `steps:{user_id}` 60초 10회 (`STEPS_RATE_LIMIT`)
+- 적재: `heartbeat_logs`에 `scheduled_key = "steps_<기기 로컬 날짜>"`로 **하루 1행** upsert.
+  걸음수는 자정 누적값이라 단조 증가하므로 `GREATEST`로 최댓값만 유지하며, 나중에 도착한
+  진짜 heartbeat가 더 크면 차트의 일별 `MAX` 집계에서 자연히 그쪽이 이긴다
+
+> ⚠️ **이것은 안부 보고가 아니다.** 다음 셋을 **의도적으로** 하지 않는다 — "일관성 수정"으로 합치지 말 것.
+> - `devices.last_seen` 갱신 — 갱신하면 버튼을 누른 것만으로 미수신 체크(예약시각 +2h)가 무력화되어
+>   대상자 안전망 푸시(`subject_safety_net`)와 보호자 경고가 조용히 사라진다. 걸음수를 확인한 것과
+>   "오늘 안부가 확인됐다"는 것은 다른 사실이다
+> - `devices.steps_delta` / `suspicious_count` 갱신 — 안부 판정 입력값이다
+> - 보호자 Push(`auto_report` / `steps`) 발송
+
+> ⚠️ **`steps_` 키는 안부 판정에서 반드시 제외돼야 한다.** `left('steps_2026-08-28', 10)`은
+> `'steps_2026'`이고 `'s' > '2'`라서 `heartbeat_service`의 `is_first_today` SQL
+> (`left(key,10) >= 오늘`)을 그냥 통과한다 — 제외하지 않으면 사용자가 버튼을 한 번만 눌러도
+> 그날 `auto_report`와 "오늘 N보" 알림이 통째로 사라진다. 대응 3곳:
+> `heartbeat_service.is_first_today`(`NOT LIKE 'steps%'`), `heartbeat_keys.intended_date`(접두사 스트립 —
+> 안 하면 날짜 해석 실패로 `server_ts` 폴백해 자정 근처에서 차트 날짜가 어긋난다),
+> `admin_diag.recent_logs`(진단 목록 오염 방지). 회귀 테스트: `tests/test_heartbeat_keys.py::TestStepsSnapshotKey`
 
 
 ### 4.18 보호자 알림 설정 조회/변경
@@ -2221,6 +2260,7 @@ CMD ["python", "main.py"]
 | `/api/v1/alerts/{id}/clear` | PUT | 개별 경고 클리어 (보호자가 건강 확인 후) |
 | `/api/v1/alerts/clear-all` | PUT | 대상자별 모든 활성 경고 일괄 클리어 + 적응형 주기 복원 |
 | `/api/v1/devices/me` | GET | 기기 정보 조회 (스케줄 동기화, 구독 상태 확인) |
+| `/api/v1/devices/me/steps` | POST | [내 걸음수] — 당일 걸음수 적재 + N일 이력 반환. ⚠️ 안부 보고 아님(last_seen 미갱신·Push 없음) |
 | `/api/v1/devices/fcm-token` | PUT | FCM 토큰 갱신 |
 | `/api/v1/devices/{device_id}/heartbeat-schedule` | PATCH/PUT | heartbeat 시각 변경 (대상자만) |
 | `/api/v1/notifications` | GET | 당일 알림 목록 조회 (보호자용, 대상자 중심 + 설정 필터링) |

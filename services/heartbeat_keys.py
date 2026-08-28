@@ -8,7 +8,9 @@ heartbeat는 도착 시각(server_ts)과 원래 속한 날짜가 다를 수 있�
 클라이언트가 보내는 scheduled_key가 그 판정의 근거다:
   · "YYYY-MM-DD_HH:MM"   정시 전송 — 그 날짜의 안부 확인
   · "recovery_YYYY-MM-DD" 회복 전송 — 예약시각 이전에 보내는 "살아있음" 신호.
-                          걸음수를 싣지 않으며 당일 안부 확인으로 치지 않는다.
+                          걸음수를 싣지 않으며 당일 안부 확인으로 치지 않는다
+  · "steps_YYYY-MM-DD"    걸음수 스냅샷 — 사용자가 [내 걸음수]를 눌러 그 시점까지의
+                          누적 걸음수만 올린 것. 안부 판정·알림과 무관하며 차트에만 쓴다.
   · None                  수동 보고 — 사용자가 직접 누른 것이라 항상 당일 취급
 
 이 모듈은 순수 함수만 두어 heartbeat_service / subject_service 양쪽이 순환 import 없이
@@ -19,14 +21,21 @@ from datetime import date, datetime, tzinfo
 
 _RECOVERY_PREFIX = "recovery_"
 
+# 걸음수 스냅샷 키 접두사. POST /api/v1/devices/me/steps 가 남기는 행에만 붙는다.
+# ⚠️ 접두사를 벗기지 않으면 `raw[:10]`이 "steps_2026"이 되어 ValueError → None으로
+#    떨어지고, log_local_date가 server_ts로 폴백해 자정 근처에서 날짜가 어긋난다.
+_STEPS_PREFIX = "steps_"
+
 
 def intended_date(scheduled_key: str | None) -> date | None:
     """scheduled_key가 가리키는 기기 로컬 날짜. 해석 불가하면 None."""
     if not scheduled_key:
         return None
     raw = scheduled_key
-    if raw.startswith(_RECOVERY_PREFIX):
-        raw = raw[len(_RECOVERY_PREFIX):]
+    for prefix in (_RECOVERY_PREFIX, _STEPS_PREFIX):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):]
+            break
     try:
         return date.fromisoformat(raw[:10])
     except ValueError:
@@ -61,3 +70,8 @@ def log_local_date(
     scheduled_key를 우선하고, 없거나(수동 보고) 형식이 깨졌으면 도착 시각으로 폴백한다.
     """
     return intended_date(scheduled_key) or server_ts.astimezone(tz).date()
+
+
+def is_steps_snapshot(scheduled_key: str | None) -> bool:
+    """걸음수 스냅샷 행 여부 — 안부 확인으로 세지 않는다."""
+    return bool(scheduled_key) and scheduled_key.startswith(_STEPS_PREFIX)

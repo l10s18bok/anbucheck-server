@@ -25,6 +25,16 @@ class HeartbeatScheduleOut(BaseModel):
     message: str
 
 
+class StepsSnapshotIn(BaseModel):
+    """[내 걸음수] 버튼이 올리는 그 시점까지의 당일 누적 걸음수.
+
+    상한 200000은 하루 걸음수로 도달 불가능한 값이라 오염된 센서값·조작을 거른다
+    (기네스 기록 수준의 하루 걸음도 이보다 훨씬 작다).
+    """
+    steps_delta: int = Field(..., ge=0, le=200000)
+    days: int = Field(default=30, ge=7, le=30)
+
+
 class DeviceInfoOut(BaseModel):
     device_id: str
     heartbeat_hour: int

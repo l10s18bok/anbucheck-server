@@ -11,6 +11,7 @@ from services.heartbeat_keys import (
     intended_date,
     is_backfill,
     is_recovery_key,
+    is_steps_snapshot,
     log_local_date,
 )
 
@@ -101,3 +102,38 @@ class TestLogLocalDate:
     def test_형식이_깨진_키도_폴백으로_동작(self):
         arrived = datetime(2026, 8, 9, 0, 30, tzinfo=timezone.utc)  # KST 09:30
         assert log_local_date("garbage", arrived, KST) == date(2026, 8, 9)
+
+
+class TestStepsSnapshotKey:
+    """[내 걸음수] 버튼이 남기는 steps_ 키.
+
+    ⚠️ 이 키가 안부 판정에 섞이면 안 된다. `left('steps_2026-08-28', 10)`은
+    'steps_2026'이고 's' > '2'라서 heartbeat_service의 is_first_today SQL
+    (`left(key,10) >= 오늘`)을 그냥 통과한다 — 제외 조건이 빠지면 버튼을 한 번만
+    눌러도 그날 auto_report와 "오늘 N보" 알림이 통째로 사라진다.
+    """
+
+    def test_접두사를_벗겨_날짜를_읽는다(self):
+        assert intended_date("steps_2026-08-28") == date(2026, 8, 28)
+
+    def test_접두사를_안_벗기면_날짜_해석에_실패한다(self):
+        # 회귀 방지 — intended_date가 raw[:10]만 보던 시절의 동작.
+        assert "steps_2026-08-28"[:10] == "steps_2026"
+
+    def test_is_first_today_SQL의_사전순_비교를_통과한다(self):
+        # 그래서 SQL에 NOT LIKE 'steps%' 예외가 반드시 필요하다.
+        assert "steps_2026-08-28"[:10] >= "2026-08-28"
+
+    def test_회복_전송으로_오분류되지_않는다(self):
+        assert is_recovery_key("steps_2026-08-28") is False
+
+    def test_스냅샷_판별(self):
+        assert is_steps_snapshot("steps_2026-08-28") is True
+        assert is_steps_snapshot("2026-08-28_18:00") is False
+        assert is_steps_snapshot("recovery_2026-08-28") is False
+        assert is_steps_snapshot(None) is False
+
+    def test_차트_귀속은_도착시각이_아니라_키_날짜(self):
+        # 자정 직후 도착해도 키가 가리키는 날짜에 귀속돼야 한다.
+        server_ts = datetime(2026, 8, 29, 0, 5, tzinfo=KST)
+        assert log_local_date("steps_2026-08-28", server_ts, KST) == date(2026, 8, 28)
