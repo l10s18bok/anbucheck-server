@@ -1,11 +1,12 @@
 import secrets
 import random
 import string
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import asyncpg
 
-from config import FREE_TRIAL_DAYS, DEFAULT_HEARTBEAT_HOUR, DEFAULT_HEARTBEAT_MINUTE
+from config import DEFAULT_HEARTBEAT_HOUR, DEFAULT_HEARTBEAT_MINUTE
+from services.trial_service import resolve_trial
 
 
 def _generate_invite_code() -> str:
@@ -124,15 +125,17 @@ async def register_user(db: asyncpg.Connection, role: str, device: dict) -> dict
 
         subscription = None
         if role == "guardian":
-            expires_at_dt = datetime.now(timezone.utc) + timedelta(days=FREE_TRIAL_DAYS)
+            # 체험은 기기 단위로 1회 — 탈퇴 후 재등록해도 최초 만료일이 복원된다.
+            # (이력이 없으면 기존과 동일하게 신규 90일. 상세는 services/trial_service.py)
+            plan, expires_at_dt = await resolve_trial(db, device["device_id"])
             await db.execute(
                 "INSERT INTO subscriptions (user_id, plan, expires_at) VALUES ($1, $2, $3)",
-                user_id, "free_trial", expires_at_dt,
+                user_id, plan, expires_at_dt,
             )
             subscription = {
-                "plan": "free_trial",
+                "plan": plan,
                 "expires_at": expires_at_dt.isoformat(),
-                "is_active": True,
+                "is_active": expires_at_dt > datetime.now(timezone.utc),
             }
 
     return {

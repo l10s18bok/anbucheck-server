@@ -405,9 +405,57 @@ Response: 201 Created
 ```
 
 - 보호자는 `invite_code` 불필요 (대상자만 보유)
-- 등록 시점에 3개월 무료 체험 구독 자동 생성
+- 등록 시점에 3개월 무료 체험 구독 자동 생성 — **단 기기당 1회**(§4.2.1)
 - 등록 시점에는 연결된 대상자 없음 → 이후 `/api/v1/subjects/link`로 연결
 - 서버는 `users`, `devices`, `subscriptions` 테이블에 각각 레코드 생성
+
+#### 4.2.1 무료 체험은 기기 단위로 1회만 부여된다
+
+탈퇴(`DELETE /api/v1/users/me`)가 `users`·`devices`·`subscriptions`를 하드 삭제하므로,
+체험 소진 여부를 기억할 수 있는 키는 `user_id`가 아니라 **기기 식별자뿐**이다.
+`trial_grants(device_id_hash, first_expires_at, granted_at, source)`가 그 이력을
+계정 삭제와 무관하게 보관한다.
+
+⚠️ **`delete_me`의 DELETE 목록에 `trial_grants`를 절대 추가하지 말 것.** 추가하는 순간
+"탈퇴 → 재등록"으로 90일 체험을 무제한 반복하는 경로가 그대로 다시 열린다.
+
+**부여 지점은 정확히 2곳이고 둘 다 `services/trial_service.resolve_trial`을 경유한다:**
+
+| # | 위치 | 비고 |
+|---|---|---|
+| ① | `services/user_service.register_user` | 신규 가입 + `role=guardian` |
+| ② | `routers/user.switch_to_guardian` | 대상자 → 보호자 전환 |
+
+②를 빠뜨리면 `subject로 가입 → switch-to-guardian → 탈퇴` 루프로 ①이 그대로 우회된다.
+(`services/subscription_service`의 INSERT는 `yearly`(유료)라 대상이 아니다.)
+새 부여 경로를 추가할 때는 반드시 `resolve_trial`을 통할 것.
+
+**판정 규칙:**
+
+| 이력 | 부여 결과 |
+|---|---|
+| 없음 | 신규 90일(`free_trial`) + 이력 기록 — 기존 동작과 동일 |
+| 있음 · 만료일이 미래 | `plan='free_trial'`, 최초 만료일 그대로 복원(잔여 기간 보존) |
+| 있음 · 만료일이 과거 | **`plan='expired'`**, 최초 만료일 그대로 |
+| `device_id` 없음(이론상) | 차단하지 않고 90일 부여 — 정상 사용자를 깨는 방향으로 실패하지 않는다 |
+
+⚠️ 만료된 경우 `plan='free_trial'` + 과거 만료일로 넣으면 안 된다 —
+`scheduler.job_subscription_expire_check`가 다음 00:00 KST에 그 행을 집어
+"구독 만료" Push를 **한 번 더** 쏜다.
+
+**해시에 pepper를 쓰지 않는다(의도).** 원본 `device_id`를 남기지 않는 것이 해싱의
+목적이고 순수 sha256으로 달성된다. pepper는 "DB 유출자가 특정 기기의 체험 사용
+여부를 역산"하는 좁은 위협에만 더해지는 반면, **값을 잃거나 로테이션하면 이력
+전체가 무효화되어 farming이 조용히 재개된다**(로테이션 = 전원 사면). env 미설정 시
+빈 문자열 폴백이면 나중에 값을 넣는 것만으로 같은 일이 아무 로그 없이 벌어진다.
+
+**기존 사용자 이관(backfill).** 테이블 도입 시 `database.py`가 1회성으로
+`plan IN ('free_trial','expired')`인 구독의 기기를 `source='backfill'`로 등록한다.
+이 이관이 없으면 기존 사용자 전원이 재등록 1회를 공짜로 쓸 수 있다.
+`plan='yearly'`(결제 중)는 제외 — `expires_at`이 결제 만료일이라 체험 만료일로
+기록하면 잘못된 baseline이 박힌다. `ON CONFLICT DO NOTHING`이라 매 기동마다 돌아도
+정상 부여분을 덮어쓰지 않으며, 판단이 바뀌면
+`DELETE FROM trial_grants WHERE source='backfill'` 한 줄로 원복된다.
 
 
 ### 4.3 대상자 연결 (보호자 → 고유 코드 입력)
@@ -1160,8 +1208,10 @@ Response: 204 No Content
 | `subscriptions` | 삭제 | 구독 정보 |
 | `devices` | 삭제 | 기기 정보 |
 | `users` | 삭제 | 사용자 계정 |
+| `trial_grants` | **보존** | ⚠️ 무료 체험 부여 이력 — 여기 삭제를 추가하면 체험 farming 구멍이 다시 열린다(§4.2.1). 저장값은 `device_id`의 sha256 해시 + 만료일뿐 |
 
 - 대상자 탈퇴 시 연결된 보호자에게 "대상자 탈퇴 알림" Push 발송 (DB 저장 없음)
+- 탈퇴 후 같은 기기로 재등록하면 **새 90일이 아니라 최초 만료일이 복원**된다(§4.2.1)
 
 
 ### 4.22 인앱 결제 서버 알림 (RTDN / Server-to-Server Notifications)
@@ -1449,6 +1499,18 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions (user_id);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_expires ON subscriptions (expires_at);
+
+
+-- 무료 체험 부여 이력 (§4.2.1)
+-- ⚠️ 이 앱에서 **탈퇴 시 삭제하지 않는 유일한 테이블**이다. 탈퇴가 users/devices/
+--    subscriptions를 하드 삭제하므로, 체험 소진을 기억할 키는 device_id뿐이다.
+--    delete_me의 DELETE 목록에 추가하면 "탈퇴 → 재등록" farming이 다시 가능해진다.
+CREATE TABLE IF NOT EXISTS trial_grants (
+    device_id_hash    TEXT PRIMARY KEY,                  -- sha256(device_id), pepper 없음(§4.2.1)
+    first_expires_at  TIMESTAMPTZ NOT NULL,              -- 최초 부여 시 만료일 — 재등록 시 이 값이 복원된다
+    granted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source            TEXT NOT NULL DEFAULT 'grant'      -- 'grant'(정상 부여) / 'backfill'(도입 시 1회성 이관)
+);
 
 
 -- 경고 테이블

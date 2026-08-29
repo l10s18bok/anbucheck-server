@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -14,6 +15,8 @@ _pool: asyncpg.Pool | None = None
 # 스케줄러 잡과 startup DDL이 단 하나의 인스턴스에서만 실행되도록 직렬화한다.
 # 각 잡/작업마다 프로세스 전역에서 유일한 고정 정수 키를 부여한다.
 # ─────────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+
 LOCK_DDL = 100               # startup CREATE TABLE / 마이그레이션
 LOCK_HEARTBEAT_CHECK = 1     # 매 분 미수신 경고 체크
 LOCK_CLEANUP_NOTI = 2        # 자정 알림 정리
@@ -359,6 +362,51 @@ CREATE TABLE IF NOT EXISTS guardian_notification_settings (
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )
 """)
+
+    # 무료 체험 부여 이력 — **계정 삭제와 무관하게 남는다.**
+    # 탈퇴(DELETE /users/me)가 users/devices/subscriptions를 하드 삭제하므로,
+    # 체험 소진 여부를 기억할 수 있는 키는 user_id가 아니라 device_id뿐이다.
+    # 이 테이블이 없으면 "탈퇴 → 재등록"으로 90일 체험을 무제한 반복할 수 있다.
+    # ⚠️ delete_me의 DELETE 목록에 절대 추가하지 말 것 — 추가하는 순간 구멍이 다시 열린다.
+    #
+    # device_id 원본을 남기지 않기 위해 sha256 해시만 저장한다(pepper 없음 —
+    # services/trial_service.py의 주석 참조).
+    await conn.execute("""
+CREATE TABLE IF NOT EXISTS trial_grants (
+    device_id_hash    TEXT PRIMARY KEY,
+    first_expires_at  TIMESTAMPTZ NOT NULL,
+    granted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source            TEXT NOT NULL DEFAULT 'grant'
+)
+""")
+    # source: 'grant'(정상 부여 시 기록) / 'backfill'(아래 1회성 이관).
+    # 판단이 바뀌면 DELETE FROM trial_grants WHERE source='backfill' 한 줄로 원복된다.
+
+    # ── 기존 사용자 이관 (idempotent) ────────────────────────────────
+    # 이 테이블 도입 전부터 체험을 쓰고 있던 기기를 등록해 둔다. 없으면 기존
+    # 사용자 전원이 "탈퇴 → 재등록"을 한 번은 공짜로 쓸 수 있다.
+    # · plan='yearly'(결제 중)는 제외 — expires_at이 결제 만료일이라 체험 만료일로
+    #   기록하면 잘못된 baseline이 박힌다.
+    # · ON CONFLICT DO NOTHING이라 매 기동마다 돌아도 정상 부여분을 덮어쓰지 않는다.
+    # · 진행 중인 체험을 깎지 않는다 — 재등록 시 자기 원래 만료일을 그대로 돌려받는다.
+    # 해시는 Python에서 계산한다 — SQL의 digest()는 pgcrypto 확장에 의존하고,
+    # 무엇보다 해시 규칙이 trial_service 한 곳에만 있어야 조회와 어긋나지 않는다.
+    from services.trial_service import hash_device_id
+
+    rows = await conn.fetch(
+        """SELECT d.device_id, s.expires_at
+             FROM subscriptions s
+             JOIN devices d ON d.user_id = s.user_id
+            WHERE s.plan IN ('free_trial', 'expired')"""
+    )
+    if rows:
+        await conn.executemany(
+            """INSERT INTO trial_grants (device_id_hash, first_expires_at, source)
+               VALUES ($1, $2, 'backfill')
+               ON CONFLICT (device_id_hash) DO NOTHING""",
+            [(hash_device_id(r["device_id"]), r["expires_at"]) for r in rows],
+        )
+        logger.info(f"[trial_grants] 기존 사용자 이관 대상 {len(rows)}건 (중복은 무시됨)")
 
 
 async def close_pool() -> None:

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
 import asyncpg
@@ -12,7 +12,8 @@ from models.user import UserRegisterIn, UserRegisterOut, SubscriptionOut
 from services.user_service import register_user, generate_unique_invite_code
 from services import push_service
 from i18n.messages import get_message
-from config import DEFAULT_HEARTBEAT_HOUR, DEFAULT_HEARTBEAT_MINUTE, FREE_TRIAL_DAYS, REGISTER_RATE_LIMIT
+from config import DEFAULT_HEARTBEAT_HOUR, DEFAULT_HEARTBEAT_MINUTE, REGISTER_RATE_LIMIT
+from services.trial_service import resolve_trial
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,24 @@ async def switch_to_guardian(
         "SELECT id FROM subscriptions WHERE user_id = $1", user_id
     )
 
-    expires_at_dt = datetime.now(timezone.utc) + timedelta(days=FREE_TRIAL_DAYS)
+    # ⚠️ 트랜잭션보다 **먼저** device_id를 확보한다. 정렬은 아래 응답 구성용 조회와
+    # 반드시 같아야 한다(ORDER BY updated_at DESC LIMIT 1) — 다른 규칙을 쓰면 한 요청
+    # 안에서 두 쿼리가 서로 다른 기기 행을 가리킬 수 있다.
+    dev = await db.fetchrow(
+        "SELECT device_id, heartbeat_hour, heartbeat_minute FROM devices "
+        "WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
+        user_id,
+    )
+
+    # 체험은 기기 단위 1회. 이 경로를 빼면 "subject 가입 → 전환 → 탈퇴" 루프로
+    # register_user 쪽 차단이 그대로 우회된다 (services/trial_service.py 참조).
+    # devices 행이 0건인 이론적 경우는 차단하지 않고 기존 동작(90일)으로 흘린다.
+    # ⚠️ 실제로 부여할 때만 호출한다 — resolve_trial은 이력을 남기므로, INSERT를
+    # 건너뛰는 분기에서 부르면 아무것도 주지 않은 채 체험만 소진시킨다.
+    plan: str | None = None
+    expires_at_dt: datetime | None = None
+    if existing_sub is None:
+        plan, expires_at_dt = await resolve_trial(db, dev["device_id"] if dev else None)
 
     async with db.transaction():
         await db.execute(
@@ -201,28 +219,29 @@ async def switch_to_guardian(
         if existing_sub is None:
             await db.execute(
                 "INSERT INTO subscriptions (user_id, plan, expires_at) VALUES ($1, $2, $3)",
-                user_id, "free_trial", expires_at_dt,
+                user_id, plan, expires_at_dt,
             )
 
-    # 현재 invite_code + heartbeat 스케줄 조회 (응답 구성용)
+    # 현재 invite_code 조회 (응답 구성용)
     u = await db.fetchrow("SELECT invite_code FROM users WHERE id = $1", user_id)
-    dev = await db.fetchrow(
-        "SELECT heartbeat_hour, heartbeat_minute FROM devices WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
-        user_id,
-    )
     sub = await db.fetchrow(
         "SELECT plan, expires_at FROM subscriptions WHERE user_id = $1 ORDER BY id DESC LIMIT 1",
         user_id,
     )
+    sub_expires = sub["expires_at"] if sub and sub["expires_at"] else expires_at_dt
+    now = datetime.now(timezone.utc)
 
     return {
         "invite_code": u["invite_code"] if u else None,
         "heartbeat_hour": dev["heartbeat_hour"] if dev else DEFAULT_HEARTBEAT_HOUR,
         "heartbeat_minute": dev["heartbeat_minute"] if dev else DEFAULT_HEARTBEAT_MINUTE,
         "subscription": {
-            "plan": sub["plan"] if sub else "free_trial",
-            "expires_at": sub["expires_at"].isoformat() if sub and sub["expires_at"] else expires_at_dt.isoformat(),
-            "is_active": True,
+            "plan": sub["plan"] if sub else (plan or "free_trial"),
+            "expires_at": sub_expires.isoformat() if sub_expires else None,
+            # ⚠️ 하드코딩 True 금지 — 재전환 시 복원된 만료일이 과거일 수 있고,
+            # 클라(subject_home_controller)가 이 값을 그대로 로컬 subscription_active에
+            # 저장하므로 만료 상태가 "구독 활성"으로 표시된다.
+            "is_active": bool(sub_expires and sub_expires > now),
         },
         "message": "보호자 기능이 활성화되었습니다",
     }
