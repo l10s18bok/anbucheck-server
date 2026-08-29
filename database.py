@@ -406,7 +406,18 @@ CREATE TABLE IF NOT EXISTS trial_grants (
                ON CONFLICT (device_id_hash) DO NOTHING""",
             [(hash_device_id(r["device_id"]), r["expires_at"]) for r in rows],
         )
-        logger.info(f"[trial_grants] 기존 사용자 이관 대상 {len(rows)}건 (중복은 무시됨)")
+
+    # ⚠️ 로그는 **조건 없이** 남긴다. `if rows:` 안에 두면 후보가 0건일 때 아무것도
+    # 찍히지 않아, "이관 대상이 없었다"와 "JOIN이 잘못돼 아무것도 못 찾았다"가
+    # 구분되지 않는다. ON CONFLICT DO NOTHING이라 실패해도 예외가 안 나므로
+    # 이 로그가 유일한 관측 수단이다.
+    # 후보 수(fetch)와 실제 보관 상태(source별 집계)를 함께 남긴다 — 전자는 쿼리가
+    # 뭘 찾았는지, 후자는 테이블에 실제로 뭐가 들어 있는지를 말해준다.
+    counts = await conn.fetch(
+        "SELECT source, COUNT(*) AS n FROM trial_grants GROUP BY source ORDER BY source"
+    )
+    stored = ", ".join(f"{r['source']}={r['n']}" for r in counts) or "없음"
+    logger.info(f"[trial_grants] 이관 후보 {len(rows)}건 / 현재 보관 {stored}")
 
 
 async def close_pool() -> None:
