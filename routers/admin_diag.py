@@ -29,7 +29,14 @@ def _verify_admin(x_admin_key: str = Header(..., alias="X-Admin-Key")) -> None:
 async def ios_heartbeat_trigger(
     collapse: bool = Query(True, description="apns-collapse-id 부착 여부 — 전달 문제 A/B 진단용"),
     dry_run: bool = Query(False, description="발송 없이 대상 상태만 조회 — 예약시각·플래그 확인용"),
-    device_id: str | None = Query(None, description="특정 기기만. 생략 시 **정규 잡과 동일 조건**(확장 탑재 + G+S)의 iOS 기기"),
+    device_id: str | None = Query(
+        None,
+        description=(
+            "특정 기기만(**접두어 일치** — 진단 응답에 보이는 8자를 그대로 넘기면 된다). "
+            "⚠️ 생략하면 조건에 맞는 **모든** 기기에 발송된다. 대상이 1대라고 가정하지 말 것 — "
+            "실사용자가 새 버전으로 업데이트하면 조용히 늘어난다."
+        ),
+    ),
     push_type: str = Query(
         "heartbeat",
         description=(
@@ -72,7 +79,12 @@ async def ios_heartbeat_trigger(
              -- 닿을 수 있는 형태로 존재해서는 안 된다.
              AND d.supports_push_heartbeat = true
              AND u.invite_code IS NOT NULL
-             AND ($1::text IS NULL OR d.device_id = $1)""",
+             -- ⚠️ **접두어 일치다.** 진단 응답은 device_id를 8자로 잘라 보여주므로,
+             -- 완전 일치만 되면 "이 기기 하나만" 지정할 방법이 없다. 실제로
+             -- 2026-09-01 새벽, 대상이 3대로 늘어난 줄 모르고 테스트 푸시를 10여 회
+             -- 쏴 **실사용자 2대에 반복 발송**했다(§9.5 사고의 재발).
+             -- 완전한 device_id를 넘겨도 그대로 동작한다.
+             AND ($1::text IS NULL OR d.device_id LIKE $1 || '%')""",
         device_id,
     )
 
