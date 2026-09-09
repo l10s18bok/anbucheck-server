@@ -164,36 +164,53 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     # 당일 안부 확인으로 카운트할 기록인가 (auto_report / 오늘 N보 알림 대상)
     is_todays_report = not backfill and not is_recovery_key(scheduled_key)
 
-    # devices 테이블 갱신.
-    # 지난 기록 보정은 **걸음수를 덮어쓰지 않는다** — 과거 값이 대시보드 카드에 현재
-    # 걸음수로 표시되면 오정보가 된다.
+    # ── devices 테이블 갱신 ──────────────────────────────────────
     #
-    # 반면 battery_level은 **갱신한다.** 이 필드의 계약은 "마지막으로 수신한 heartbeat의
-    # 배터리"이고(미수신 스케줄러가 `battery_level < 20` → '배터리 방전 추정'으로 분기할 때
-    # 읽는 값, services/scheduler.py), 지난 기록도 엄연히 수신한 heartbeat다. 저장을
+    # ⚠️ **last_seen은 "오늘의 안부가 확인된 시각"이다 — 당일 안부 확인 기록만 전진시킨다.**
+    #
+    # 지난 기록 보정(backfill)과 살아있음 신호(recovery)는 `is_todays_report=False`이므로
+    # 이 값을 밀지 않는다. 밀면 스케줄러의 두 잡이 그 기기를 **그날 통째로 건너뛴다** —
+    # 둘 다 `last_seen < 오늘 로컬 자정`으로 대상을 거르기 때문이다(services/scheduler.py):
+    #   · job_ios_heartbeat_trigger(예약시각 정각) — iOS는 이것이 유일한 자동 전송 트리거라
+    #     발사되지 않으면 그날 안부 경로가 통째로 사라진다(사용자가 앱을 다시 열지 않는 한).
+    #   · job_heartbeat_check(예약시각 +2h) — 실제로 미수신인 날의 보호자 경고가 조용히 사라진다.
+    #
+    # 2026-09-09 운영 데이터(30일)로 확인한 실제 피해:
+    #   · 마스킹 기록 19건 / 13일. **전부 그날 예약시각 이전에 도착했다(예외 0건)** —
+    #     recovery는 `예약시각 −15분` 이전에만 발동하고 백필은 아침 큐 플러시로 나가기
+    #     때문이다. 즉 이 기록이 생기면 사실상 항상 마스킹이 성립한다.
+    #   · iOS 3대(09-01 ×2, 08-31)는 그날 트리거가 실제로 미발사됐다.
+    #   · 안드로이드 1대는 09-02·09-03 이틀 연속 미수신 경고가 소실됐다(09-04에 09-03분이
+    #     백필로 도착 = 그날 정시 전송이 없었다는 증거).
+    #
+    # 같은 규칙을 routers/device.py의 [내 걸음수] 엔드포인트가 이미 따르고 있다 —
+    # "걸음수를 확인한 것"과 "오늘 안부가 확인된 것"은 다른 사실이라 last_seen을 갱신하지 않는다.
+    #
+    # ⚠️ **steps_delta도 같은 조건으로 묶는다.** recovery는 걸음수를 싣지 않으므로(null),
+    # 묶지 않으면 마지막으로 알던 값을 NULL로 덮는다. 지금은 이 컬럼을 읽는 곳이 없어
+    # 무해하지만(걸음수 차트는 heartbeat_logs에서 온다) 되살아나기 쉬운 함정이다. 백필
+    # 분기는 원래부터 이걸 피하고 있었고 — "과거 값이 대시보드 카드에 현재 걸음수로
+    # 표시되면 오정보" — recovery만 예외였던 것이 실수였다.
+    #
+    # 반면 battery_level은 **어느 경우에도 갱신한다.** 이 필드의 계약은 "마지막으로 수신한
+    # heartbeat의 배터리"이고(미수신 스케줄러가 `battery_level < 20` → '배터리 방전 추정'으로
+    # 분기할 때 읽는 값, services/scheduler.py), 지난 기록도 엄연히 수신한 heartbeat다. 저장을
     # 생략하면 그보다 **더 오래된** 값이 남아 계약이 더 어긋난다. "지금 배터리가 부족하다"고
     # 주장하는 Push를 생략하는 것과, 마지막으로 아는 값을 보관하는 것은 별개다.
     # ⚠️ 이 필드는 표시 전용이 아니라 스케줄러의 경고 등급 분기 입력이다 — 바꾸기 전에
     #    scheduler.py의 battery 분기를 함께 볼 것.
     #
-    # suspicious_count는 **보정 기록이 활동을 증명할 때만 리셋**한다. 아래에서
-    # resolve_active_alerts로 활성 경고를 지우면서 카운터만 남겨두면, 경고는 사라졌는데
-    # 다음 suspicious 한 번에 곧장 상위 등급으로 튀는 불일치가 생긴다.
-    if backfill:
-        if suspicious:
-            await db.execute(
-                """UPDATE devices SET last_seen = $1, battery_level = $2, updated_at = $3
-                   WHERE user_id = $4 AND device_id = $5""",
-                now_dt, battery_level, now_dt, user_id, device_id,
-            )
-        else:
-            await db.execute(
-                """UPDATE devices SET last_seen = $1, battery_level = $2,
-                    suspicious_count = 0, updated_at = $3
-                   WHERE user_id = $4 AND device_id = $5""",
-                now_dt, battery_level, now_dt, user_id, device_id,
-            )
-    else:
+    # suspicious_count는 **당일 안부 확인일 때만 에스컬레이션 입력**으로 쓰고, 그 외에는
+    # 활동을 증명할 때만 리셋한다. 아래에서 resolve_active_alerts로 활성 경고를 지우면서
+    # 카운터만 남겨두면, 경고는 사라졌는데 다음 suspicious 한 번에 곧장 상위 등급으로 튀는
+    # 불일치가 생긴다.
+    #
+    # ⚠️ **미해결(별건) — recovery가 경고 등급 사다리를 매일 리셋한다.** recovery는 아래에서
+    # resolve_active_alerts로 활성 경고를 전부 지우고 여기서 카운터도 0으로 만든다. 그리고
+    # 구조적으로 그날 미수신 체크(+2h)보다 항상 먼저 온다(`예약시각 −15분` 이전에만 발동).
+    # 그래서 연속 미전송이어도 매일 "주의"만 반복되고 경고·긴급으로 올라가지 못한다.
+    # 이번 변경의 범위 밖이다 — 이 주석을 근거로 여기서 카운터 처리를 바꾸지 말 것.
+    if is_todays_report:
         new_suspicious_count = device["suspicious_count"] + 1 if suspicious else 0
         await db.execute(
             """UPDATE devices SET
@@ -209,6 +226,19 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             new_suspicious_count,
             now_dt,
             user_id, device_id,
+        )
+    elif suspicious:
+        # 지난 기록/살아있음 신호가 활동을 증명하지 못했다 — 카운터는 건드리지 않는다.
+        await db.execute(
+            """UPDATE devices SET battery_level = $1, updated_at = $2
+               WHERE user_id = $3 AND device_id = $4""",
+            battery_level, now_dt, user_id, device_id,
+        )
+    else:
+        await db.execute(
+            """UPDATE devices SET battery_level = $1, suspicious_count = 0, updated_at = $2
+               WHERE user_id = $3 AND device_id = $4""",
+            battery_level, now_dt, user_id, device_id,
         )
 
     # 당일 첫 heartbeat 여부 판정 — heartbeat_logs INSERT 전에 조회해야 정확하다.
