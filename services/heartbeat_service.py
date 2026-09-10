@@ -205,11 +205,15 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     # 카운터만 남겨두면, 경고는 사라졌는데 다음 suspicious 한 번에 곧장 상위 등급으로 튀는
     # 불일치가 생긴다.
     #
-    # ⚠️ **미해결(별건) — recovery가 경고 등급 사다리를 매일 리셋한다.** recovery는 아래에서
-    # resolve_active_alerts로 활성 경고를 전부 지우고 여기서 카운터도 0으로 만든다. 그리고
-    # 구조적으로 그날 미수신 체크(+2h)보다 항상 먼저 온다(`예약시각 −15분` 이전에만 발동).
-    # 그래서 연속 미전송이어도 매일 "주의"만 반복되고 경고·긴급으로 올라가지 못한다.
-    # 이번 변경의 범위 밖이다 — 이 주석을 근거로 여기서 카운터 처리를 바꾸지 말 것.
+    # ⚠️ **살아있음 신호(recovery)는 카운터도 리셋하지 않는다** (2026-09-10 수정).
+    # recovery는 예약시각 이전에만 발동하므로 구조적으로 **그날 미수신 체크(+2h)보다
+    # 항상 먼저** 온다. 여기서 카운터를 0으로 만들고 아래에서 경고까지 지우면, 연속
+    # 미전송이어도 매일 "주의"만 반복되고 경고·긴급으로 올라가지 못한다(사다리 무력화).
+    # 아래 resolve_active_alerts 게이팅과 **반드시 함께** 유지할 것 — 한쪽만 고치면
+    # "경고는 caution인데 카운터는 0"이라는 불일치가 생긴다.
+    #
+    # ⚠️ 지난 기록 보정(backfill)은 예외다. 그건 그 날 기기가 실제로 살아 있었다는
+    # 사후 증거이므로 카운터를 리셋하고 아래에서 경고도 해소한다.
     if is_todays_report:
         new_suspicious_count = device["suspicious_count"] + 1 if suspicious else 0
         await db.execute(
@@ -227,8 +231,9 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             now_dt,
             user_id, device_id,
         )
-    elif suspicious:
-        # 지난 기록/살아있음 신호가 활동을 증명하지 못했다 — 카운터는 건드리지 않는다.
+    elif suspicious or is_recovery_key(scheduled_key):
+        # (a) 지난 기록이 활동을 증명하지 못했거나, (b) 살아있음 신호다.
+        # 어느 쪽도 카운터를 건드리지 않는다 — (b)의 이유는 위 사다리 주석 참조.
         await db.execute(
             """UPDATE devices SET battery_level = $1, updated_at = $2
                WHERE user_id = $3 AND device_id = $4""",
@@ -336,7 +341,34 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             await _send_manual_report_to_guardians(db, user_id)
             await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
         else:
-            resolved_levels = await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
+            # ⚠️ **회복 전송은 경고를 해소하지 않는다** (2026-09-10 수정).
+            #
+            # 회복 전송(`recovery_<날짜>`, is_todays_report=False)이 주장하는 것은
+            # "이 기기가 켜져 있다" 하나이고, "오늘의 안부가 확인됐다"가 아니다.
+            # 그런데 회복 전송은 구조적으로 **그날 미수신 체크(+2h)보다 항상 먼저**
+            # 온다(예약시각 이전에만 나가므로). 그래서 여기서 경고를 지우면 아래가 된다:
+            #
+            #   1일차 아침  —              → 23:00 미수신 체크: 활성 경고 없음 → 주의
+            #   2일차 아침  회복 전송(경고 삭제) → 23:00: 또 활성 경고 없음 → 주의
+            #   3일차 아침  회복 전송(경고 삭제) → 23:00: 또 주의 …
+            #
+            # 며칠째 안부가 없는데도 **주의에서 영원히 못 올라간다** — 경고·긴급으로
+            # 올리라고 만든 에스컬레이션 사다리가 통째로 무력화된다. 지금까지 눈에
+            # 띄지 않은 이유는 iOS 회복 전송이 "사람이 앱을 여는 것"에만 의존해
+            # 30일에 2건뿐이었기 때문이고(안드로이드는 워커가 보내 더 잦다),
+            # NSE가 앱 실행 없이 회복 전송을 하게 되면 갭 기간 내내 매일 발동한다.
+            #
+            # 대가는 "기기가 살아났는데 보호자 경고가 몇 시간 더 남는다"이다 —
+            # 그날 예약시각 정시 전송이 성공하면 그때 정상적으로 해소된다.
+            # 정시 전송까지 실패하면 경고가 유지된 채 사다리가 올라간다(의도).
+            #
+            # ⚠️ 지난 기록 보정(backfill)은 위쪽 조기 반환에서 별도로 해소한다 —
+            #    그건 그 날 기기가 실제로 살아 있었다는 사후 증거이므로 성격이 다르다.
+            resolved_levels = (
+                await alert_service.resolve_active_alerts(db, user_id, include_emergency=True)
+                if is_todays_report
+                else []
+            )
             # caution/warning/urgent가 해소되면 alert_service가 이미 "정상 복귀"(alert_resolved)
             # Push를 발송한다. 그 위에 auto_report까지 보내면 "정상 복귀" + "오늘 안부 확인 완료"
             # 두 알림이 같은 초에 도착해 보호자 화면이 지저분해진다.
