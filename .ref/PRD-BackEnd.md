@@ -184,6 +184,7 @@ heartbeat 수신 → last_seen 갱신
       │   │   └─ manual = false AND is_first_today → 보호자 Push "오늘 안부 확인 완료" (당일 1회)
       │   │                                          + steps_delta > 0이면 활동 정보 알림 동시 생성 (당일 1회)
       └─ true  → warning/urgent → caution 하향 (정상 복귀 알림 없음)
+               ※ SOS(note='emergency_request')도 하향 대상 — 의도된 현행 동작
                → suspicious_count 기반 보호자 경고 에스컬레이션 (suspicious 전용 문구 사용):
                  ├─ 1회 (suspicious_count=1) → 주의(caution) 등급 + `caution_suspicious` + 보호자 Push (중복 방지)
                  ├─ 2회 (suspicious_count=2) → 경고(warning) 등급 + `warning_suspicious` + 보호자 Push (warning/urgent 없을 때만)
@@ -680,6 +681,7 @@ Response: 200 OK
         - ⚠️ `notification_events`에 저장하는 본문은 **바꾸지 않는다**(`push_auto_report_body` 그대로) — 그 행은 대상자당 1건을 모든 보호자가 공유하고, 앱 알림 목록은 저장된 body가 아니라 `message_key`로 자체 번역해 그린다. 보호자별로 달라지는 렌더링(별칭·걸음수)은 `push_*` 안에서만 일어난다는 규칙(§6.7)의 연장이다. 결과적으로 앱 목록에는 `auto_report` 카드와 `steps` 카드가 그대로 둘 다 남는다(수용)
   - `suspicious` = true:
     - 기존 warning/urgent 경고 → caution으로 하향 (정상 복귀 알림 없음)
+    - ⚠️ **SOS(`note='emergency_request'`)도 하향 대상이다 — 의도된 현행 동작**(2026-09-12 검토 후 유지). `downgrade_alerts_on_suspicious`는 `alert_level IN ('warning','urgent')`만 보고 내리므로 대상자가 누른 SOS 긴급도 주의로 내려간다. 방향이 거꾸로로 보인다 — `suspicious=false`(사람 흔적 있음)는 SOS를 **해소**하는데 `suspicious=true`(사람 흔적 **전무**)는 긴급을 **낮춘다**. 도움을 요청한 사람이 그 뒤로 폰을 전혀 안 만졌다는 뜻이니 경보를 낮출 이유가 아니라는 지적이 가능하다. 그럼에도 유지하는 근거는 **영구히 묻히지 않는다**는 것이다 — 바로 아래 `suspicious_count` 기반으로 새 경고가 생성되어 걸음수 0이 사흘 이어지면 다시 긴급으로 올라간다. 바꾸려면 그 UPDATE에 `AND (note IS NULL OR note != 'emergency_request')` 한 줄을 더하면 된다. **버그로 오인해 고치지 말 것.**
     - suspicious_count=1 → caution 등급 + `message_key="caution_suspicious"` + `push_caution(reason="suspicious")` (중복 방지)
     - suspicious_count=2 → warning 등급 + `message_key="warning_suspicious"` + `push_warning(reason="suspicious")` (warning/urgent 없을 때만)
     - suspicious_count≥3 → urgent 등급 + `message_key="urgent_suspicious"` + `push_urgent(reason="suspicious")` (매일 반복, days_inactive 반영)
