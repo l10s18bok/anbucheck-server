@@ -214,8 +214,20 @@ async def clear_all_alerts(
 
 async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int, include_emergency: bool = False) -> list[str]:
     """heartbeat 수신 시 활성 경고 해소 처리, 보호자 Push 발송 (DND 적용)
-    include_emergency=True: 수동 heartbeat — 긴급 도움 요청 알림도 함께 해소
-    include_emergency=False: 자동 heartbeat — 긴급 도움 요청 알림은 보호자 수동 클리어만 가능"""
+
+    include_emergency=True  — 대상자가 누른 SOS(`note='emergency_request'`)까지 해소한다.
+      수동 보고와 **자동 heartbeat/회복 전송이 모두 이 값을 쓴다.** 호출부가 전부
+      `suspicious=false` 분기 안이라 `걸음수>0 || 화면/잠금해제 || 오늘앱실행` 중 하나가
+      확인된 상태이고, "쓰러진 사람 옆에서 폰이 혼자 SOS를 지우는" 경로는 그 조건에
+      걸려 존재하지 않는다. 지우는 것은 사건이 아니라 대시보드 카드 등급이다 — SOS
+      푸시는 이미 즉시·무조건 전 보호자에게 나갔고 알림 목록에도 그날 내내 남는다.
+      ⚠️ 자동 경로를 False로 바꾸지 말 것. SOS 행을 지우는 다른 경로가 보호자의
+         [건강 확인 완료]뿐이라, 아무도 누르지 않으면 카드가 **영구히 긴급**으로 박힌다
+         (자정 정리도 만료도 push_count 상한도 없다). 2026-09-12 확정.
+
+    include_emergency=False — 지난 기록 보정(backfill) 전용. 그건 "그 날 살아 있었다"는
+      **사후** 증거라 지금의 SOS 상태를 말해 주지 못하므로 긴급은 남긴다.
+    """
     from services.heartbeat_service import _save_notification_event, _get_active_guardians, _get_invite_code, _push_to_guardians
 
     if include_emergency:
