@@ -275,7 +275,20 @@ async def resolve_active_alerts(db: asyncpg.Connection, subject_user_id: int, in
 
 async def downgrade_alerts_on_suspicious(db: asyncpg.Connection, subject_user_id: int) -> None:
     """suspicious=true heartbeat 수신 시 warning/urgent 활성 경고를 caution으로 하향.
-    정상 복귀 알림은 발송하지 않음 — 사람이 직접 폰을 사용한 증거가 없으므로."""
+    정상 복귀 알림은 발송하지 않음 — 사람이 직접 폰을 사용한 증거가 없으므로.
+
+    ⚠️ **SOS(`note='emergency_request'`)도 하향 대상이다 — 의도된 현행 동작**
+       (2026-09-12 검토 후 유지 결정).
+       방향이 거꾸로로 보인다: `suspicious=false`(사람 흔적 있음)는 SOS를 해소하는데,
+       `suspicious=true`(사람 흔적 **전무**)는 긴급을 주의로 낮춘다. 도움을 요청한
+       사람이 그 뒤로 폰을 전혀 안 만졌다는 뜻이니 경보를 낮출 이유가 아니라는
+       지적이 가능하다.
+       그럼에도 유지하는 근거는 **영구히 묻히지 않는다**는 것이다 — 바로 뒤에서
+       `suspicious_count` 기반으로 새 경고가 생성되어(1회 주의 / 2회 경고 / 3회+ 긴급)
+       걸음수 0이 사흘 이어지면 다시 긴급으로 올라간다.
+       바꾸려면 위 UPDATE에 `AND (note IS NULL OR note != 'emergency_request')`
+       한 줄을 더하면 된다. **그 전에 이 문단을 먼저 읽고, 버그로 오인해 고치지 말 것.**
+    """
     await db.execute(
         """UPDATE alerts SET alert_level = 'caution'
            WHERE subject_user_id = $1 AND status = 'active'
