@@ -255,6 +255,66 @@ async def push_heartbeat_trigger(fcm_token: str, locale: str = "ko_KR", collapse
     )
 
 
+
+async def push_silent_wake(fcm_token: str) -> bool:
+    """Android 대상자 기기의 백그라운드 실행 차단을 **뚫기 위한** 데이터 전용 푸시.
+
+    ⚠️ **알림이 아니다.** `notification` 없이 `data`만 실어 보내므로 사용자에게는
+    아무것도 보이지 않는다. 목적은 메시지 내용이 아니라 **FCM 도착 그 자체**다.
+
+    왜 필요한가 (실측: kr.co.anbucheck/.claude/rules/android_scheduling_field_notes.md §8):
+    `RUN_ANY_IN_BACKGROUND` 앱옵이 `ignore`인 기기에서는 0차 알람과 1차 WorkManager
+    job이 **한 게이트에 동시에** 막힌다. Doze·버킷·쿼터·배칭과 독립이라 화면을 켜도
+    풀리지 않고, 앱을 열지 않는 순수 대상자에게는 빠져나올 계기가 구조적으로 없다.
+    그 게이트를 여는 유일한 것이 고우선순위 FCM이 부여받는 **temp-power-save
+    allowlist**(약 20초)이며, 그 창에서 밀려 있던 알람·job·전송이 한꺼번에 나간다.
+
+    지금까지 그 창을 열어 온 것은 **예약시각 +2h 미수신 푸시**였는데, 그 푸시를
+    쏘는 tick이 보호자 경고를 만드는 바로 그 tick이라 **안부가 7초 뒤 도착하는데도
+    매일 미수신 판정이 먼저 났다**(09-04~09-12, 9일 연속 실측). 이 푸시는 그보다
+    **90분 앞서** 같은 창을 열어, 미수신 판정 전에 안부가 나가게 한다.
+
+    ⚠️ **Android 전용이다. iOS에는 절대 보내지 말 것** — APNs 보관 슬롯이 앱당
+    1칸이라, 이 푸시 하나가 그날의 iOS 트리거 푸시를 밀어내 안부를 통째로
+    소실시킨다(ios_nse_field_notes.md §13.5 실측). 대상 선별은 호출부의
+    `d.platform = 'android'` 필터가 담당한다.
+
+    ⚠️ **미검증 전제**: temp-power-save allowlist 부여가 관측된 것은 전부 **표시형**
+    푸시였다. 데이터 전용 푸시도 같은 대우를 받는지는 아직 확인되지 않았다. 받지
+    못하면 이 잡은 조용히 아무 일도 하지 않고(무해), 기존대로 +2h 푸시가 그날을
+    담당한다 — 최악이 현재 동작이다.
+
+    클라 쪽에는 대응 코드가 없어도 된다(`firebaseMessagingBackgroundHandler`가
+    로그만 찍는다). 창이 열리면 밀려 있던 워커가 스스로 전송하기 때문이다.
+    """
+    messaging = _get_messaging()
+    if messaging is None:
+        return False
+    try:
+        message = messaging.Message(
+            # notification 없음 → 사용자에게 보이지 않는다.
+            data={"type": "silent_wake"},
+            android=messaging.AndroidConfig(
+                priority="high",  # ★ 이게 temp-power-save allowlist의 조건이다
+                # ⚠️ TTL을 주지 말 것. 늦게 배달돼도 무해하다 — 창은 시각 정보를
+                # 싣고 있지 않고, 창이 열린 뒤 무엇을 할지는 워커의 콜백 가드가
+                # 정한다(`lastHeartbeatDate == 오늘`이면 스킵, 예약시각 -15분
+                # 이전이면 회복 전송). 반면 TTL을 걸면 기기가 그 시간 동안
+                # 오프라인이었다는 이유로 **돌아왔을 때 뚫어 줄 수 있었던 푸시가
+                # 버려진다.** 쌓임 방지는 collapse_key가 담당한다(아래).
+                collapse_key="anbu_silent_wake",  # 기기당 대기 1건 — 최신 것만 남는다
+            ),
+            token=fcm_token,
+        )
+        await asyncio.to_thread(messaging.send, message)
+        return True
+    except Exception as e:
+        logger.error(f"[사일런트 깨우기] 발송 실패 ({fcm_token[:10]}...): {e}")
+        if _is_dead_token_error(e):
+            await _invalidate_fcm_token(fcm_token)
+        return False
+
+
 async def push_battery_low(fcm_token: str, subject_user_id: int, sound: Optional[str] = "default", invite_code: str | None = None, locale: str = "ko_KR", alias: str | None = None) -> bool:
     return await send_push(
         fcm_token,
