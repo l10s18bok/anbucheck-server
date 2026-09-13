@@ -294,15 +294,20 @@ async def push_silent_wake(fcm_token: str) -> bool:
         message = messaging.Message(
             # notification 없음 → 사용자에게 보이지 않는다.
             data={"type": "silent_wake"},
+            # ⚠️ **priority 외에 아무것도 더하지 말 것 — 이 잡 자체가 실험이다.**
+            # 검증하려는 명제는 "데이터 전용 푸시도 temp-power-save allowlist를
+            # 받는가" 하나인데, 지금까지 부여가 관측된 것은 전부 **비-collapsible
+            # 표시형** 푸시였다. ttl이나 collapse_key를 얹으면 실패했을 때
+            # "데이터 전용이라서"인지 "그 필드 때문"인지 가를 수 없게 된다
+            # (필드노트 §7.7·§8.10.1이 변수 2개로 판정을 못 가른 그 함정이다).
+            # ㆍttl: 늦게 배달돼도 무해하다 — 창은 시각 정보를 싣고 있지 않고,
+            #   창이 열린 뒤 무엇을 할지는 워커 콜백 가드가 정한다. 반면 ttl을
+            #   걸면 오프라인이었다는 이유로 돌아왔을 때 뚫어 줄 수 있었던
+            #   푸시가 버려진다.
+            # ㆍcollapse_key: 기기당 하루 1건이라 쌓일 일이 없다(§8.9 — 9일 연속
+            #   매일 FCM으로 프로세스가 떴다 = 도달 가능한 기기다).
             android=messaging.AndroidConfig(
                 priority="high",  # ★ 이게 temp-power-save allowlist의 조건이다
-                # ⚠️ TTL을 주지 말 것. 늦게 배달돼도 무해하다 — 창은 시각 정보를
-                # 싣고 있지 않고, 창이 열린 뒤 무엇을 할지는 워커의 콜백 가드가
-                # 정한다(`lastHeartbeatDate == 오늘`이면 스킵, 예약시각 -15분
-                # 이전이면 회복 전송). 반면 TTL을 걸면 기기가 그 시간 동안
-                # 오프라인이었다는 이유로 **돌아왔을 때 뚫어 줄 수 있었던 푸시가
-                # 버려진다.** 쌓임 방지는 collapse_key가 담당한다(아래).
-                collapse_key="anbu_silent_wake",  # 기기당 대기 1건 — 최신 것만 남는다
             ),
             token=fcm_token,
         )

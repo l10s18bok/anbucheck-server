@@ -1731,6 +1731,95 @@ WHERE u.invite_code IS NOT NULL
 iOS는 정각 트리거가 실패한 경우에도 폴백 문구가 이미 표시돼 있으므로 +2h에 또 보내면
 같은 날 알림이 2개가 된다.
 
+### 6.0.1 Android 사일런트 깨우기 푸시 (예약시각 **+30분**, 매 1분 체크)
+
+> `services/scheduler.py: job_silent_wake` / 락 `LOCK_SILENT_WAKE=7` / job id `silent_wake`
+> 도입 2026-09-13
+
+**이 잡은 미전송을 "해결"하지 않는다. 막혀 있던 것을 "뚫는다."**
+
+삼성 등 일부 Android 기기는 `RUN_ANY_IN_BACKGROUND` 앱옵을 `ignore`로 돌려 **패키지 단위로
+백그라운드 실행을 차단**한다. 이 게이트는 Doze·standby 버킷·JobScheduler 쿼터·배칭과
+**독립**이라, 클라의 0차 알람과 1차 WorkManager job(one-off·periodic)이 **한꺼번에** 막힌다
+(실측: `kr.co.anbucheck/.claude/rules/android_scheduling_field_notes.md` §8). 진입은 **마지막
+포그라운드 실행 +약 3일**, 해제는 **포그라운드 실행 1회**이며 **프로세스 실행은 어느 쪽에도
+해당하지 않는다** — 즉 앱을 열지 않는 순수 대상자에게만 선택적·지속적으로 걸린다.
+
+그 상태에서 그 기기의 문을 여는 것은 **고우선순위 FCM이 부여받는 temp-power-save
+allowlist**(약 20초)뿐이고, 그 한 창에서 알람 배달·job 실행·전송이 순서대로 전부 일어난다.
+
+**왜 +2h로는 부족한가**: 지금까지 그 창을 열어 온 것은 §6.1의 `subject_safety_net`(+2h)인데,
+**그 푸시를 쏘는 tick이 보호자 경고를 만드는 바로 그 tick**이다(같은 `_process_missed_heartbeat`
+함수 — 대상자 푸시가 보호자 게이트 앞에 놓여 있을 뿐). 그래서 기기가 멀쩡하고 안부가 **7초
+뒤** 도착하는데도 매일 미수신 판정이 먼저 났다(2026-09-04~09-12, 9일 연속 실측). 이 잡이
+**90분 앞서** 같은 창을 열어 판정 전에 안부가 나가게 한다.
+
+**발송 조건** (`platform='android'` + 대상자 + +30m 시점 오늘 미수신):
+
+```sql
+WHERE u.invite_code IS NOT NULL
+  AND d.platform = 'android'
+  AND d.fcm_token IS NOT NULL
+  AND date_trunc('minute', now()) = date_trunc('minute',
+        (date_trunc('day', now() AT TIME ZONE zz.tz)
+           + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute + 30)
+        ) AT TIME ZONE zz.tz)
+  AND d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz)
+```
+
+§6.1 미수신 체크 쿼리의 복사본이며 차이는 둘뿐이다 — **`+120` → `+30`**, 그리고
+**`AND d.platform = 'android'` 추가**.
+
+⚠️⚠️ **그 platform 필터는 선택이 아니라 필수다.** §6.1의 쿼리에는 platform 필터가 **없고**
+Android 게이팅이 `_process_missed_heartbeat` **안**에 있다. 그래서 그 쿼리를 그대로 복사하면
+iOS 대상자에게도 이 푸시가 간다. **APNs 보관 슬롯은 앱당 1칸**이라 그 한 발이 §6.0의 그날
+트리거 푸시를 밀어내 iOS 안부를 **통째로 소실**시킨다(실측: `ios_nse_field_notes.md` §13.5).
+또한 이 메시지에는 `apns` 블록이 아예 없어 FCM이 iOS 토큰에 사일런트 APNs 페이로드를
+합성해 보내므로, 슬롯 소비를 막는 것은 **이 한 줄뿐**이다.
+
+**푸시 내용** (`push_silent_wake` — `send_push`를 타지 않는 별도 함수):
+
+| 항목 | 값 |
+|---|---|
+| `notification` | **없음** — 사용자에게 아무것도 보이지 않는다 |
+| `data.type` | `silent_wake` |
+| `android.priority` | `high` ★ **temp-power-save allowlist의 조건** |
+| `apns` | **없음** (Android 전용이라 불필요) |
+| `ttl` / `collapse_key` | **주지 않는다** (아래 참조) |
+
+⚠️ **`priority` 외에 아무 필드도 더하지 말 것 — 이 잡 자체가 실험이다.** 검증하려는 명제는
+**"데이터 전용 푸시도 temp-power-save allowlist를 받는가"** 하나인데, 지금까지 부여가 관측된
+것은 전부 **비-collapsible 표시형** 푸시다. `ttl`이나 `collapse_key`를 얹으면 실패했을 때
+"데이터 전용이라서"인지 "그 필드 때문"인지 가를 수 없다.
+- `ttl`: 늦게 배달돼도 무해하다(창은 시각 정보를 싣지 않고, 창이 열린 뒤 무엇을 할지는
+  클라 워커의 콜백 가드가 정한다). 반면 걸면 오프라인이었다는 이유로 **돌아왔을 때 뚫어 줄 수
+  있었던 푸시가 버려진다.**
+- `collapse_key`: 기기당 하루 1건이라 쌓일 일이 없다.
+
+**클라 변경 없음.** 데이터 전용이라 `firebaseMessagingBackgroundHandler`는 로그만 찍고,
+포그라운드 핸들러는 `notification == null`에 즉시 반환한다. 창이 열리면 밀려 있던 워커가
+스스로 전송한다.
+
+**§6.1(+2h)과의 관계 — 완전히 별개이며 자동으로 정리된다:**
+- 함수·쿼리·advisory lock·job id가 전부 독립이고 `job_heartbeat_check`는 **한 글자도 바뀌지
+  않았다.** 끄려면 `setup_scheduler`의 `add_job` 한 줄만 주석 처리하면 정확히 이전 동작이 된다.
+- +30m로 뚫리면 `last_seen`이 오늘이 되어 §6.1의 `last_seen < 오늘 로컬 자정` 필터가 그 기기를
+  결과 집합에서 자동으로 떨어뜨린다. 안 뚫리면 §6.1이 기존대로 동작한다 — **최악이 현재 동작이다.**
+- **경고를 만들지 않는다.** `alerts` 생성·에스컬레이션·`notification_events` 적재는 전부
+  §6.1의 몫이고, 여기서 하는 일은 푸시 1건이 전부다.
+
+**부하**: 대상은 "+30m까지 미전송"인 부분집합이고 루프 본문이 FCM 1회뿐이라(+2h는 푸시 +
+보호자 조회 + alert 생성 + 이벤트 저장 + 보호자 수만큼 fan-out) 한 행당 비용이 한 자릿수 배
+싸다. 게다가 **DB 쓰기도 순서 의존성도 없어 동시 발송이 안전**하므로 `asyncio.gather` +
+세마포어(20)로 보낸다 — 순차 `await`가 1분 tick을 넘겨 APScheduler `max_instances=1`에 막혀
+다음 tick이 통째로 드롭되는 실패 모드에서 애초에 벗어나 있다. DB 커넥션은 `gather` **전에**
+반납한다. 대상 건수·성공 건수·소요 ms를 `logger.info`로 남겨 그 여유를 계속 관측 가능하게 둔다.
+
+⚠️ **미검증 전제**: 위에 적은 대로 데이터 전용 푸시의 allowlist 부여는 아직 확인되지 않았다.
+받지 못하면 이 잡은 조용히 아무 일도 하지 않고 §6.1이 그날을 담당한다. **판정 방법**: 예약시각
++30m 시점에 대상 기기의 `dumpsys netpolicy | grep temp-power-save`에 `reason=PUSH_MESSAGING`
+항목이 찍히는가, 그리고 `HeartbeatSend: OK`가 +2h가 아니라 **+30분대**로 앞당겨지는가.
+
 ### 6.1 경고 생성 스케줄러 (고정 시각 기반 + 등급별 판정)
 
 > 📊 상세 플로우차트: [heartbeat_flowchart.md](../../kr.co.anbucheck/.claude/rules/heartbeat_flowchart.md) — 차트 3 참조
@@ -1781,6 +1870,10 @@ iOS는 정각 트리거가 실패한 경우에도 폴백 문구가 이미 표시
      대상자에겐 "앱을 열어 안부를 보내달라"는 푸시가 전달되게 한다.
    - 미수신일마다 1회 발화 → 무시 시 매일 반복(클라의 버그 있던 Android 일일 로컬 안전망
      알림을 대체. iOS 대상자는 클라 정시 로컬알림 gs_deadman이 PRIMARY라 서버 푸시 제외).
+   - ⚠️ **이 푸시가 "LAST-RESORT"가 아니라 그날의 유일한 전송 트리거가 되는 기기 상태가
+     있다** — `RUN_ANY_IN_BACKGROUND: ignore`(§6.0.1). 그리고 이 tick이 보호자 경고를 만드는
+     바로 그 tick이라, 그 상태에선 안부 도착 **7초 전**에 미수신 판정이 먼저 난다. 그래서
+     90분 앞서 문을 여는 §6.0.1을 따로 뒀다.
    - 클라는 탭 시 safety_home으로 이동 후 미전송 heartbeat 자동 재전송(자세히는 FrontEnd §2.5.1).
 
 3. 보호자 구독 확인:
@@ -2315,7 +2408,7 @@ CMD ["python", "main.py"]
 
 **포착 지점 (2곳):**
 
-1. **스케줄러 잡 오류** — `setup_scheduler()`에 `EVENT_JOB_ERROR` 리스너 1개를 달아 5개 잡 전부를 단일 포착한다. 리스너가 이벤트 루프 스레드에서 호출된다는 보장이 없어 동기 전송 진입점(`notify_error_sync`)을 쓰고, 스택은 예외 객체의 `__traceback__`(리스너까지 살아오지 않을 수 있음) 대신 APScheduler가 주는 사전 포맷 문자열 `event.traceback`을 쓴다.
+1. **스케줄러 잡 오류** — `setup_scheduler()`에 `EVENT_JOB_ERROR` 리스너 1개를 달아 7개 잡 전부를 단일 포착한다. 리스너가 이벤트 루프 스레드에서 호출된다는 보장이 없어 동기 전송 진입점(`notify_error_sync`)을 쓰고, 스택은 예외 객체의 `__traceback__`(리스너까지 살아오지 않을 수 있음) 대신 APScheduler가 주는 사전 포맷 문자열 `event.traceback`을 쓴다.
 2. **API 미처리 예외(500)** — `main.py`의 전역 `@app.exception_handler(Exception)`. `HTTPException`(401/404 등 의도된 4xx)·422 검증 오류는 FastAPI가 별도 처리하므로 여기로 오지 않는다(진짜 서버 오류만 포착). 비동기 컨텍스트라 전송은 `asyncio.to_thread`로 떼어 이벤트 루프를 막지 않는다.
 
 **알림에 담기는 정보:** 예외 타입+메시지 · 발생 위치(잡 ID 또는 `METHOD /path`) · 스택트레이스 · **에러 직전 로그 N줄**.
