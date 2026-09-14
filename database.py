@@ -24,7 +24,7 @@ LOCK_SUB_EXPIRE = 3          # 구독 만료 체크
 LOCK_CLEANUP_SUBJECTS = 4    # 미연결 대상자 정리
 LOCK_CLEANUP_LOGS = 5        # heartbeat_logs 30일 초과 삭제
 LOCK_IOS_HB_TRIGGER = 6      # iOS 예약시각 heartbeat 트리거 푸시
-LOCK_SILENT_WAKE = 7         # Android 예약시각 +30m 사일런트 깨우기 푸시
+LOCK_EARLY_SAFETY_NET = 7    # Android 예약시각 +60m 조기 미전송 알림
 
 
 async def get_db():

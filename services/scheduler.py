@@ -1,7 +1,7 @@
 """APScheduler 기반 스케줄러
 
 - 매 1분: heartbeat 미수신 경고 체크
-- 매 1분: Android 사일런트 깨우기 푸시 (예약시각 +30m 미전송 대상)
+- 매 1분: Android 조기 미전송 알림 (예약시각 +60m 미전송 대상)
 - 매일 00:00 KST: 당일 보호자 알림 자정 일괄 삭제
 - 매일 00:00 KST: 구독 만료 체크
 - 매일 03:00 KST: 보호자 미연결 대상자 정리
@@ -29,7 +29,7 @@ from database import (
     LOCK_CLEANUP_SUBJECTS,
     LOCK_CLEANUP_LOGS,
     LOCK_IOS_HB_TRIGGER,
-    LOCK_SILENT_WAKE,
+    LOCK_EARLY_SAFETY_NET,
 )
 from i18n.messages import get_message
 from services.alert_service import get_guardian_settings, should_send, should_push
@@ -444,16 +444,16 @@ async def job_ios_heartbeat_trigger() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# 2-c. Android 사일런트 깨우기 푸시 (매 1분 / 예약시각 +30m)
+# 2-c. Android 조기 미전송 알림 (매 1분 / 예약시각 +60m)
 # ─────────────────────────────────────────────────────────────
 
 # 동시 발송 상한. FCM 1건은 asyncio.to_thread로 스레드풀에 올라가므로(기본
 # max_workers = min(32, cpu+4)) 그보다 낮게 잡아 풀을 포화시키지 않는다.
-_SILENT_WAKE_CONCURRENCY = 20
+_EARLY_SAFETY_NET_CONCURRENCY = 20
 
 
-async def job_silent_wake() -> None:
-    """예약시각 **+30분**까지 안부가 오지 않은 Android 기기에 데이터 전용 푸시를 쏜다.
+async def job_early_safety_net() -> None:
+    """예약시각 **+60분**까지 안부가 오지 않은 Android 기기에 **미전송 알림**을 먼저 보낸다.
 
     **이 잡은 미전송을 "해결"하지 않는다. 막혀 있던 것을 "뚫는다".**
 
@@ -461,41 +461,63 @@ async def job_silent_wake() -> None:
     한 게이트에 동시에 막혀, 그날 안부를 내보내는 것이 서버 푸시 하나뿐이 된다
     (kr.co.anbucheck/.claude/rules/android_scheduling_field_notes.md §8).
     지금까지 그 역할을 해 온 것은 `job_heartbeat_check`(+2h)의 안전망 푸시인데,
-    **그 푸시를 쏘는 tick이 보호자 경고를 만드는 바로 그 tick**이라 안부가 7초 뒤
-    도착하는데도 매일 미수신 판정이 먼저 났다(9일 연속 실측). 이 잡이 90분 앞서
-    같은 창을 열어 판정 전에 안부가 나가게 한다.
+    **그 푸시를 쏘는 tick이 보호자 경고를 만드는 바로 그 tick**이라 안부가 7~14초 뒤
+    도착하는데도 매일 미수신 판정이 먼저 났다. 이 잡이 1시간 앞서 같은 문을 연다.
+
+    ⚠️⚠️ **데이터 전용(사일런트) 푸시로 되돌리지 말 것.** 2026-09-13에 그렇게 배포했다가
+    다음 날 되돌렸다. FCM 공식 문서가 명시한다:
+    "If FCM detects a pattern in which messages don't result in user-facing
+    notifications, your messages may be deprioritized to normal priority" /
+    "When the device is in Doze mode, delivery may be delayed".
+    ⚠️ 실측 근거는 **아직 없다** — 09-14 A66-Q1OR(매일 +2h 표시형 알림 12~14초 뒤 전송하던
+    기기)이 18:30 사일런트에 무반응이었으나, **같은 날 20:00 표시형에도 무반응**이라 기기 도달
+    불가로 판정 불가였다. 교체 근거는 문서이며, **표시형이 문을 연다는 것은 실측됐다**
+    (필드노트 §8.9·§8.10.2 — 삼성폰 9일). 게다가 "your messages"라 앱 전체 메시지가 강등될
+    위험까지 있어, 효과 없는 사일런트가 유일하게 문을 여는 +2h 알림을 해칠 수 있었다.
+
+    ⚠️ **왜 +60분인가 (+30분이 아니라)** — allow-while-idle 알람의 배달 창이
+    **[예약시각, +60분]**이다(`dumpsys alarm`의 `window=+1h0m0s`). +30분이면 알람이 창
+    후반(실측 +29~32분)에 뜨는 **정상 기기까지** 매일 알림음을 듣게 된다 — 09-13 테스트폰은
+    +30분 알림 20초 전에 보냈다. +60분이면 정상 기기는 이미 보낸 뒤라 **막힌 기기만** 받고,
+    +2h 판정까지 60분 여유가 남는다.
+
+    **`push_subject_safety_net`을 그대로 재사용하는 이유** (새 함수를 만들지 말 것):
+    - `type=subject_safety_net` → 탭 시 기존과 동일하게 safety_home으로 라우팅
+    - `tag=anbu_safety_net` → 안부 전송 성공 시 앱이 `cancelSubjectSafetyNet()`으로 **이 태그의
+      알림을 지운다**(실측: 뜬 지 1.7초 만에 소멸). 막힌 기기에서도 몇 초 안에 사라진다
+    - +60분에 못 뚫려 +2h 알림이 또 가도 **같은 태그라 쌓이지 않고 교체**된다
+    - 문구("💗 안부 확인이 필요합니다")도 +60분 시점에 그대로 참이다
+
+    ⚠️ **소리·진동이 난다.** 안드로이드 8+는 소리를 서버가 아니라 앱의 알림 채널이 정하고,
+    앱에는 `anbu_alerts`(Importance.high) 채널 하나뿐이다. 조용히 하려면 앱에 저중요도
+    채널을 추가해야 한다(서버가 없는 채널을 지정하면 FCM이 기본 채널로 폴백 → 소리 남).
+    막힌 기기는 원래 +2h에 같은 알림을 받았으므로 **새 부담이 아니라 시각이 당겨지는 것**이다.
 
     ⚠️ **`job_heartbeat_check`와 완전히 별개다.** 함수·쿼리·advisory lock·job id가
     모두 독립이며 그 잡은 한 글자도 바뀌지 않았다. 끄려면 `setup_scheduler`의
-    `add_job` 한 줄만 주석 처리하면 되고, 그러면 정확히 이전 동작으로 돌아간다.
+    `add_job` 한 줄만 주석 처리하면 정확히 이전 동작으로 돌아간다.
 
-    ⚠️ **`AND d.platform = 'android'`는 선택이 아니라 필수다.** `job_heartbeat_check`의
-    쿼리에는 platform 필터가 없고 Android 게이팅이 `_process_missed_heartbeat` 안에
-    있어서, 그 쿼리를 그대로 복사하면 iOS 대상자에게도 푸시가 간다. APNs 보관 슬롯은
-    앱당 1칸이라 그 한 발이 **그날의 iOS 트리거 푸시를 밀어내 안부를 통째로 소실**
-    시킨다(ios_nse_field_notes.md §13.5 실측). 이 줄을 지우지 말 것.
+    ⚠️ **`AND d.platform = 'android'`는 필수다.** `job_heartbeat_check`의 쿼리에는 platform
+    필터가 없고 Android 게이팅이 `_process_missed_heartbeat` 안에 있다. 그대로 복사하면
+    iOS 대상자에게도 가서 **APNs 보관 슬롯(앱당 1칸)을 빼앗아 그날 트리거를 소실**시킨다
+    (ios_nse_field_notes.md §13.5). 이 줄을 지우지 말 것.
 
-    ⚠️ **보호자 경고를 만들지 않는다.** 경고 생성·에스컬레이션·`alerts` 적재는 전부
-    +2h 잡의 몫이다. 여기서 하는 일은 푸시 1건이 전부다.
+    ⚠️ **보호자 경고를 만들지 않는다.** 경고 생성·에스컬레이션·`alerts` 적재는 전부 +2h 잡의
+    몫이다. 여기서 하는 일은 대상자 본인에게 알림 1건이 전부다.
 
-    **+2h 잡과의 관계는 자동으로 정리된다** — 이 푸시로 안부가 나가면 `last_seen`이
-    오늘이 되어, +2h 잡의 `last_seen < 오늘 로컬 자정` 필터가 그 기기를 결과 집합에서
-    자연스럽게 떨어뜨린다. 뚫리지 않았다면 +2h가 기존대로 동작한다 — 즉 **최악이
-    현재 동작이다.**
+    **+2h 잡과의 관계는 자동으로 정리된다** — 뚫려서 안부가 나가면 `last_seen`이 오늘이 되어
+    +2h 쿼리가 그 기기를 떨어뜨린다. 못 뚫리면 +2h가 기존대로 동작한다 — **최악이 현재 동작이다.**
 
-    **부하**: 대상은 "+30m까지 미전송"인 부분집합이고 루프 본문이 FCM 1회뿐이라
-    +2h 잡(푸시 + 보호자 조회 + alert 생성 + 이벤트 저장 + 보호자 수만큼 fan-out)보다
-    한 행당 비용이 한 자릿수 배 싸다. 게다가 DB 쓰기도 순서 의존성도 없어 **동시
-    발송이 안전**하므로, 순차 await로 1분 tick을 넘길 위험(APScheduler
-    `max_instances=1`에 막혀 다음 tick이 통째로 드롭되는 §13.2② 실패)에서 애초에
-    벗어나 있다. 소요 시간을 로그로 남겨 그 여유를 계속 관측 가능하게 둔다.
+    **부하**: 대상은 +60분까지 미전송인 부분집합이고 루프 본문이 FCM 1회뿐이며 DB 쓰기·순서
+    의존성이 없어 동시 발송이 안전하다 — 순차 await로 1분 tick을 넘기는 실패에서 벗어나 있다.
+    기기별 발송 로그는 `send_push`가 `subject_safety_net (토큰 앞 10자)`로 남긴다.
     """
     from database import get_pool
 
     started = asyncio.get_running_loop().time()
     async with get_pool().acquire() as db:
         targets = await db.fetch(
-            """SELECT d.device_id, d.fcm_token
+            """SELECT d.device_id, d.fcm_token, d.locale
                FROM users u
                JOIN devices d ON u.id = d.user_id
                LEFT JOIN pg_timezone_names z ON z.name = d.timezone
@@ -505,7 +527,7 @@ async def job_silent_wake() -> None:
                  AND d.fcm_token IS NOT NULL
                  AND date_trunc('minute', now()) = date_trunc('minute',
                        (date_trunc('day', now() AT TIME ZONE zz.tz)
-                          + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute + 30)
+                          + make_interval(mins => d.heartbeat_hour * 60 + d.heartbeat_minute + 60)
                        ) AT TIME ZONE zz.tz)
                  AND d.last_seen < (date_trunc('day', now() AT TIME ZONE zz.tz) AT TIME ZONE zz.tz)""",
         )
@@ -513,23 +535,24 @@ async def job_silent_wake() -> None:
     if not targets:
         return
 
-    from services.push_service import push_silent_wake
+    from services.push_service import push_subject_safety_net
 
-    sem = asyncio.Semaphore(_SILENT_WAKE_CONCURRENCY)
+    sem = asyncio.Semaphore(_EARLY_SAFETY_NET_CONCURRENCY)
 
-    async def _send(token: str) -> bool:
+    async def _send(token: str, locale: str) -> bool:
         async with sem:
-            return await push_silent_wake(token)
+            return await push_subject_safety_net(token, locale)
 
-    # push_silent_wake는 예외를 자체 처리해 bool을 돌려주지만, gather가 한 건의
+    # send_push는 예외를 자체 처리해 bool을 돌려주지만, gather가 한 건의
     # 사고로 전체를 중단시키지 않도록 return_exceptions로 한 번 더 막는다.
     results = await asyncio.gather(
-        *(_send(row["fcm_token"]) for row in targets), return_exceptions=True
+        *(_send(row["fcm_token"], row["locale"] or "ko_KR") for row in targets),
+        return_exceptions=True,
     )
     ok = sum(1 for r in results if r is True)
     elapsed_ms = int((asyncio.get_running_loop().time() - started) * 1000)
     logger.info(
-        "[사일런트 깨우기] 발송 — 대상 %d건 / 성공 %d건 / %dms",
+        "[조기 미전송 알림] 발송 — 대상 %d건 / 성공 %d건 / %dms",
         len(targets), ok, elapsed_ms,
     )
 
@@ -545,10 +568,10 @@ def setup_scheduler() -> AsyncIOScheduler:
     logger.info("스케줄러 등록: Heartbeat 미수신 체크 — 매 분 정각 실행")
     scheduler.add_job(_singleton(LOCK_IOS_HB_TRIGGER)(job_ios_heartbeat_trigger), CronTrigger(second=0), id="ios_hb_trigger", replace_existing=True)
     logger.info("스케줄러 등록: iOS heartbeat 트리거 푸시 — 매 분 정각 실행(예약시각 정각 발송)")
-    # ⚠️ 이 한 줄이 사일런트 깨우기 전체의 on/off 스위치다 — 주석 처리하면
+    # ⚠️ 이 한 줄이 조기 미전송 알림 전체의 on/off 스위치다 — 주석 처리하면
     # job_heartbeat_check(+2h)만 남아 정확히 이전 동작으로 돌아간다.
-    scheduler.add_job(_singleton(LOCK_SILENT_WAKE)(job_silent_wake), CronTrigger(second=0), id="silent_wake", replace_existing=True)
-    logger.info("스케줄러 등록: Android 사일런트 깨우기 푸시 — 매 분 정각 실행(예약시각 +30m 미전송 대상)")
+    scheduler.add_job(_singleton(LOCK_EARLY_SAFETY_NET)(job_early_safety_net), CronTrigger(second=0), id="early_safety_net", replace_existing=True)
+    logger.info("스케줄러 등록: Android 조기 미전송 알림 — 매 분 정각 실행(예약시각 +60m 미전송 대상)")
     scheduler.add_job(_singleton(LOCK_CLEANUP_NOTI)(job_cleanup_notifications), CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="cleanup_noti", replace_existing=True)
     logger.info("스케줄러 등록: 알림 자정 정리 — 매일 00:00 KST")
     scheduler.add_job(_singleton(LOCK_SUB_EXPIRE)(job_subscription_expire_check), CronTrigger(hour=0, minute=0, timezone="Asia/Seoul"), id="sub_expire", replace_existing=True)
