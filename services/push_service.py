@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Optional
 
 from i18n.messages import get_message
@@ -122,6 +123,10 @@ async def send_push(
         return False
     try:
         msg_data = {k: str(v) for k, v in (data or {}).items()}
+        # 발송 시각(UTC epoch 초). iOS 확장이 "보관됐다가 뒤늦게 배달된 푸시"를 가려내는 데
+        # 쓴다 — 늦게 온 경고에만 안부를 얹어 보내고, 제때 온 경고는 즉시 통과시킨다.
+        # 구버전 앱은 이 키를 무시한다.
+        msg_data["sent_at"] = str(int(time.time()))
 
         # 대상자별 그룹화 키 — subject_user_id 우선, 없으면 invite_code, 둘 다 없으면 'default'
         # 앱이 포그라운드/백그라운드/종료 상태 모두에서 OS가 같은 키로 묶어 표시
