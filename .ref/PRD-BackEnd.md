@@ -517,7 +517,7 @@ Response: 200 OK
 
 - `max_subjects`: 보호자별 최대 대상자 등록 인원. `users.max_subjects` 컬럼(기본 5)에서 조회한 동적 값 — 과거 전역 상수 `MAX_SUBJECTS`는 폐지되고 `subject_service.get_max_subjects(db, guardian_user_id)` 헬퍼로 일원화됨(한도 체크·에러 문구·이 응답 4곳 공통). 유료 결제로 한도를 상향하는 기획 시 결제 검증 시점에 `UPDATE users SET max_subjects` 만으로 반영
 - `can_add_more`: `len(subjects) < max_subjects`
-- `status`: `normal` (정상), `warning` (경고)
+- `status`: `normal`(활성 경고 없음) 또는 활성 경고의 `alert_level`(`info`/`caution`/`warning`/`urgent`). **활성 경고가 여럿이면 가장 심각한 등급**을 반환한다(`subject_service._get_active_alert`, 동률이면 최신). ⚠️ 최신순으로 되돌리지 말 것 — heartbeat 한 건이 suspicious 경고와 배터리 부족 `info`를 같은 `created_at`으로 함께 만들 수 있어, 최신순이면 `info`가 뽑혀 경고 중인 대상자 카드가 '정상'으로 표시된다(2026-09-24 실측). `alert` 필드도 같은 행이다
 - `alert`: 활성 경고가 있으면 `{ "id": 10, "days_inactive": 2 }`, 없으면 `null`
 - `device_id`: 대상자 기기 고유 ID
 - `heartbeat_hour`, `heartbeat_minute`: 대상자의 heartbeat 예약 시각

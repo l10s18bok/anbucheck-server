@@ -414,8 +414,20 @@ async def get_step_history_for_self(
 
 
 async def _get_active_alert(db: asyncpg.Connection, subject_user_id: int) -> dict | None:
+    # 활성 경고가 여럿이면 "가장 최근"이 아니라 "가장 심각한" 것을 고른다.
+    # 한 heartbeat가 suspicious 경고(warning 등)와 배터리 부족(info)을 같은 now_dt로
+    # 함께 만들 수 있어, 최신순이면 info가 뽑혀 대시보드 카드가 '안전'으로 보였다(2026-09-24).
     row = await db.fetchrow(
-        "SELECT id, alert_level, days_inactive FROM alerts WHERE subject_user_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+        """SELECT id, alert_level, days_inactive FROM alerts
+           WHERE subject_user_id = $1 AND status = 'active'
+           ORDER BY CASE alert_level
+                      WHEN 'urgent'  THEN 4
+                      WHEN 'warning' THEN 3
+                      WHEN 'caution' THEN 2
+                      ELSE 1
+                    END DESC,
+                    created_at DESC
+           LIMIT 1""",
         subject_user_id,
     )
     if row is None:
