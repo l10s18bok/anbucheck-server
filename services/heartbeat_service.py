@@ -10,6 +10,7 @@ from i18n.messages import get_message
 from services import alert_service, push_service
 from services.alert_service import get_guardian_settings, should_send, should_push
 from services.heartbeat_keys import is_backfill, is_recovery_key
+from services.timezone_sync import validated_new_timezone
 
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,37 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
         from fastapi import HTTPException, status
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="기기를 찾을 수 없습니다")
 
+    # ── 기기 시간대 동기화 (해외 여행·이주·출장) ─────────────────────
+    #
+    # ⚠️ **분류(is_backfill)와 도착일·오늘 첫 안부 계산보다 먼저** 갱신하고, 이 함수 안에서는
+    # 이후 `device_tz_name`만 읽는다(`device["timezone"]` 직접 참조 금지). 순서가 바뀌면
+    # 시간대를 바꾼 **그 첫 전송**이 옛 시간대로 오분류된다 — 예: 서울→LA 첫날 LA 18:00
+    # 전송이 서울 기준으로는 다음 날 도착이라 지난 기록 보정으로 떨어져 last_seen이 안 밀린다.
+    #
+    # 키 종류(정시·recovery_·지난 기록·수동)와 무관하게 수행한다. 서쪽으로 이동한 iOS·앱옵
+    # 차단 Android는 정시 전송이 막혀 **회복 전송이 첫 전송**이 되기 때문이다.
+    #
+    # 클라는 전송 **직전의** 현재 시간대를 싣는다(보류 큐 payload에 저장하지 않음) — 서울에서
+    # 저장된 지난 기록이 파리에서 재전송될 때 서버 값을 서울로 되돌리지 않게 하기 위함이다.
+    #
+    # 실패해도 heartbeat는 막지 않는다(옛 값으로 계속 진행). 시간대를 보내지 않는 구버전
+    # 앱은 validated_new_timezone이 쿼리 없이 None을 반환해 기존 경로와 동일하다.
+    device_tz_name = device["timezone"]
+    new_tz = await validated_new_timezone(db, payload.get("timezone"), device_tz_name)
+    if new_tz is not None:
+        try:
+            await db.execute(
+                "UPDATE devices SET timezone = $1 WHERE user_id = $2 AND device_id = $3",
+                new_tz, user_id, device_id,
+            )
+            logger.info(
+                f"[tz change] device_id={device_id} {device_tz_name}→{new_tz} "
+                f"key={payload.get('scheduled_key')}"
+            )
+            device_tz_name = new_tz
+        except Exception as e:
+            logger.warning(f"[tz change] UPDATE 실패 — 옛 값 유지 device_id={device_id}: {e}")
+
     now_dt = datetime.now(timezone.utc)
     suspicious    = payload["suspicious"]
     battery_level = payload.get("battery_level")
@@ -155,7 +187,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     #                             당일 안부 확인으로 치지 않는다
     #   · None (수동 보고)      → 사용자가 직접 누른 것이므로 항상 당일 취급
     try:
-        device_tz = ZoneInfo(device["timezone"] or "Asia/Seoul")
+        device_tz = ZoneInfo(device_tz_name or "Asia/Seoul")
     except Exception:
         device_tz = ZoneInfo("Asia/Seoul")
     arrival_date = now_dt.astimezone(device_tz).date()
@@ -297,7 +329,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
                  )
            )""",
         device_id,
-        device["timezone"],
+        device_tz_name,
     )
 
     # heartbeat_logs 기록.

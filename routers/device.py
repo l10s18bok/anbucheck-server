@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 import asyncpg
 
@@ -10,6 +12,9 @@ from models.device import (
 )
 from models.guardian import StepHistoryOut
 from services.subject_service import record_steps_snapshot
+from services.timezone_sync import validated_new_timezone
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 
@@ -102,6 +107,26 @@ async def update_fcm_token(
             "supports_push_heartbeat = $2, updated_at = NOW() WHERE user_id = $3",
             body.fcm_token, body.supports_push_heartbeat, user["user_id"],
         )
+
+    # 기기 시간대 동기화 — 위 토큰 갱신과 **독립된** 별도 UPDATE다. 실패해도 토큰 갱신
+    # 결과에 영향을 주지 않는다(validated_new_timezone은 raise하지 않고, UPDATE는 try).
+    # 보호자 기기는 heartbeat를 보내지 않으므로 이 경로가 보호자 시간대(방해금지 판정)를
+    # 갱신하는 유일한 수단이다.
+    if body.timezone:
+        try:
+            current_tz = await db.fetchval(
+                "SELECT timezone FROM devices WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
+                user["user_id"],
+            )
+            new_tz = await validated_new_timezone(db, body.timezone, current_tz)
+            if new_tz is not None:
+                await db.execute(
+                    "UPDATE devices SET timezone = $1 WHERE user_id = $2",
+                    new_tz, user["user_id"],
+                )
+                logger.info(f"[tz change] user_id={user['user_id']} {current_tz}→{new_tz} (fcm-token)")
+        except Exception as e:
+            logger.warning(f"[tz change] fcm-token 시간대 갱신 실패 — 옛 값 유지: {e}")
     return {"message": "FCM 토큰이 갱신되었습니다"}
 
 

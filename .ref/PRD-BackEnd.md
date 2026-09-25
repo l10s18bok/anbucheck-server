@@ -590,8 +590,11 @@ Body:
   "manual": false,
   "steps_delta": 342,
   "suspicious": false,
-  "battery_level": 85
+  "battery_level": 85,
+  "timezone": "Europe/Paris"
 }
+// timezone: 전송 시점 기기의 현재 IANA 시간대(선택). 저장값과 다르면 서버가 devices.timezone을
+//           갱신한다 — 아래 "기기 시간대 동기화" 참조. 구버전 앱은 보내지 않는다.
 // manual: 사용자가 직접 "안부 보고하기" 버튼을 눌렀을 때 true (기본값 false)
 //         ※ 클라이언트가 동일 날짜 재시도를 lastManualReportDate로 차단하므로, 서버에 도달한 manual=true는 당일 첫 수동 보고
 // steps_delta:
@@ -608,6 +611,22 @@ Response: 200 OK
   "heartbeat_minute": 0
 }
 ```
+
+#### 기기 시간대 동기화 (`services/timezone_sync.py`, 2026-09-25)
+
+`devices.timezone`은 원래 가입 때 한 번만 저장됐다. 폰은 **현재 있는 곳의 현지 시각**으로 동작하므로(WorkManager 예약, `scheduled_key`의 날짜·시각, iOS 확장) 대상자가 해외로 여행·이주하면 서버와 폰의 "오늘"과 "예약시각"이 어긋났다 — 서쪽 이동은 미수신 체크(+2h)가 현지 전송보다 먼저 돌아 매일 미수신 판정, 큰 시차의 서쪽 이동은 현지 정시 전송이 서울 기준 다음 날 도착이라 **지난 기록 보정으로 오분류**(`last_seen` 미갱신).
+
+- 클라가 heartbeat와 `PUT /devices/fcm-token`에 현재 IANA 시간대를 싣고, 서버는 **저장값과 다르고 유효할 때만** 갱신한다.
+- **`heartbeat_hour/minute`의 의미는 "현재 있는 곳의 현지 시각"**이다(폰 동작과 일치). 이동해도 바꾸지 않는다.
+- ⚠️ **갱신은 기기 조회 직후, 분류(`is_backfill`)·도착일·`is_first_today`보다 먼저** 한다. 이후 `process_heartbeat` 안에서는 `device_tz_name` 변수만 읽는다(`device["timezone"]` 직접 참조 금지). 순서가 바뀌면 시간대를 바꾼 **첫 전송**이 옛 시간대로 오분류된다.
+- **키 종류(정시·`recovery_`·지난 기록·수동)와 무관하게** 갱신한다. 서쪽으로 이동한 iOS와 앱옵 차단 Android는 정시 전송이 막혀 **회복 전송이 첫 전송**이 되기 때문이다.
+- ⚠️ **유효성은 Python `ZoneInfo`와 `pg_timezone_names` 양쪽을 통과해야 한다.** heartbeat 분류는 Python으로, 미수신 체크·`is_first_today`는 SQL로 시간대를 해석하므로 한쪽에만 있는 이름을 저장하면 두 판정이 갈린다. 그래서 Railway PG에 없는 legacy alias(`US/Pacific`·`Japan`·`ROK` 등, §4.4)는 **갱신하지 않고 옛 값을 유지**한다(알려진 한계).
+- ⚠️ **절대 heartbeat를 막지 않는다.** 검증·UPDATE 실패는 로그만 남기고 옛 값으로 진행한다. 필드에 `max_length`를 걸지 않는 것도 같은 이유다(초과 시 422 — 아래 하위호환 계약 위반). 길이 검사는 `timezone_sync`가 한다.
+- **값이 없거나 저장값과 같으면 쿼리를 실행하지 않는다** — 구버전 앱의 처리 경로가 이전과 동일하다.
+- 변경 시 로그: `[tz change] device_id=… old→new key=…` (fcm-token 경로는 `user_id=… (fcm-token)`).
+- 클라는 시간대를 **전송 직전의 현재 값**으로 싣고 보류 큐 payload에는 저장하지 않는다 — 서울에서 저장된 지난 기록이 파리에서 재전송될 때 서버 값을 되돌리지 않게 하기 위함이다(PRD-FrontEnd §2.2.3).
+- **이동한 날 하루는 판정이 어긋날 수 있다**(이미 돈 체크는 되돌리지 않는다). 서쪽 이동은 정시 전송이 "예약시각 전"으로 막혀 **1~2일 미전송 뒤 회복 전송(2일 갭 조건)으로 자가 복구**되며, 그다음 날부터 정상이다.
+- 보호자 방해금지(DND)는 **보호자 기기 시간대**로만 판정한다(`alert_service.is_in_dnd`). 대상자가 어디로 이동해도 보호자 DND에는 영향이 없다. 보호자 본인이 이동하면 보호자 앱의 `PUT /devices/fcm-token`이 갱신한다(보호자는 heartbeat를 보내지 않으므로 이 경로가 유일하다).
 
 #### Heartbeat 영구 하위호환 계약 (`HeartbeatIn`)
 
@@ -894,7 +913,10 @@ Headers:
   Authorization: Bearer <device_token>
 Body:
 {
-  "fcm_token": "new-fcm-token-string"
+  "fcm_token": "new-fcm-token-string",
+  "locale": "ko_KR",
+  "supports_push_heartbeat": false,
+  "timezone": "Asia/Seoul"
 }
 Response: 200 OK
 {
@@ -903,6 +925,7 @@ Response: 200 OK
 ```
 
 - FCM 토큰은 OS에 의해 주기적으로 변경될 수 있으므로 앱 시작 시마다 확인/갱신
+- `timezone`(선택): 기기의 현재 IANA 시간대. 앱 콜드 스타트와, 포그라운드 복귀 시 시간대가 바뀌었을 때 실린다. 토큰 갱신과 **독립된 별도 UPDATE**로 처리하며 실패해도 토큰 갱신 결과에 영향이 없다. 검증 규칙은 §4.6 "기기 시간대 동기화"와 같다. **보호자 기기 시간대(DND 판정 기준)를 갱신하는 유일한 경로**다.
 
 
 ### 4.14 Heartbeat 시각 변경
@@ -1480,7 +1503,7 @@ CREATE TABLE IF NOT EXISTS devices (
     suspicious_count INTEGER DEFAULT 0,                -- 연속 suspicious 횟수
     heartbeat_hour  INTEGER NOT NULL DEFAULT 18,       -- heartbeat 시각 (시, 0~23, 기본 18)
     heartbeat_minute INTEGER NOT NULL DEFAULT 0,       -- heartbeat 시각 (분, 0~59, 기본 0)
-    timezone        TEXT NOT NULL DEFAULT 'Asia/Seoul', -- 기기 시간대 (IANA timezone)
+    timezone        TEXT NOT NULL DEFAULT 'Asia/Seoul', -- 기기 시간대 (IANA timezone) — 가입 시 저장 + heartbeat·fcm-token으로 갱신(§4.6)
     last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()

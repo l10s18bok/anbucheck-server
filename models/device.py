@@ -9,6 +9,10 @@ class FcmTokenIn(BaseModel):
     # 미지정(구버전 클라)이면 False로 기록한다 — 플래그가 **현재 실행 중인 클라**를
     # 반영해야 하므로, 신버전→구버전 다운그레이드 시 자가 치유되도록 항상 덮어쓴다.
     supports_push_heartbeat: bool = False
+    # 기기의 현재 IANA 시간대 — 앱 포그라운드 진입 때 실린다. 보호자 기기도 보낸다
+    # (보호자 방해금지 시간 판정이 보호자 기기 시간대를 쓰므로). 무효하면 무시한다.
+    # 길이 제한은 timezone_sync에서 한다(여기서 걸면 토큰 갱신까지 422로 실패한다).
+    timezone: str | None = None
 
 
 class HeartbeatScheduleIn(BaseModel):

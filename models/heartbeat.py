@@ -27,6 +27,11 @@ class HeartbeatIn(BaseModel):
     # 서버는 (device_id, scheduled_key) 조합이 이미 heartbeat_logs에 있으면
     # 부수효과(알림/Push) 없이 200 OK만 반환해 retry가 중복 알림을 만들지 않게 한다.
     scheduled_key: Optional[str] = Field(default=None, max_length=64)
+    # 전송 시점 기기의 현재 IANA 시간대(해외 여행·이주 대응). 저장값과 다르면 서버가
+    # devices.timezone을 갱신한다(services/timezone_sync.py).
+    # ⚠️ max_length를 걸지 말 것 — 초과 시 heartbeat 자체가 422로 거부된다(위 하위호환
+    #    계약 위반). 길이·유효성 검사는 timezone_sync가 하고, 무효면 조용히 무시한다.
+    timezone: Optional[str] = None
 
 
 class HeartbeatOut(BaseModel):
