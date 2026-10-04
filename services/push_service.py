@@ -5,7 +5,7 @@ import os
 import time
 from typing import Optional
 
-from i18n.messages import get_message
+from i18n.messages import get_message, get_steps_message
 from services.alias import clean_alias
 
 logger = logging.getLogger(__name__)
@@ -375,7 +375,7 @@ async def push_auto_report(fcm_token: str, subject_user_id: int, sound: Optional
     보호자별로 달라지는 렌더링(별칭·걸음수)은 push_* 안에서만 일어난다.
     """
     if steps is not None and steps > 0:
-        body = get_message(locale, "noti_steps_body", steps=f"{steps:,}")
+        body = get_steps_message(locale, steps)
     else:
         body = get_message(locale, "push_auto_report_body")
     return await send_push(
