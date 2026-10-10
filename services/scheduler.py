@@ -100,7 +100,10 @@ async def job_heartbeat_check() -> None:
 
 async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
     user_id = row["user_id"]
-    battery_level = row["battery_level"] or 0
+    # None은 "0%"가 아니라 "모름"이다(배터리를 싣지 않은 heartbeat, G+S 해제 시 초기화 등).
+    # `or 0`으로 읽으면 실제로 안부가 끊긴 날 '배터리 방전 추정 (0%)'만 보내고 return해,
+    # 주의→경고→긴급 사다리가 매일 거기서 멈춘다. 모르면 배터리 분기를 건너뛰고 미수신 판정으로 간다.
+    battery_level = row["battery_level"]
 
     # 0. 대상자 본인 안부유도 푸시 (Android 한정, 구독·보호자 유무와 무관).
     #    iOS는 클라의 정시 로컬알림(gs_deadman)이 PRIMARY 트리거이므로 서버 푸시 제외.
@@ -125,7 +128,7 @@ async def _process_missed_heartbeat(db: asyncpg.Connection, row: dict) -> None:
     invite_code = await _get_invite_code(db, user_id)
 
     # 1. 배터리 < 20% → 정보 등급 1회 발송 후 종료
-    if battery_level < 20:
+    if battery_level is not None and battery_level < 20:
         if not await has_active_alert(db, user_id, "info"):
             await create_alert(db, user_id, "info", last_seen_dt)
             await _save_notification_event(

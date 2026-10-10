@@ -225,12 +225,19 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
     # 표시되면 오정보" — recovery만 예외였던 것이 실수였다.
     #
     # 반면 battery_level은 **어느 경우에도 갱신한다.** 이 필드의 계약은 "마지막으로 수신한
-    # heartbeat의 배터리"이고(미수신 스케줄러가 `battery_level < 20` → '배터리 방전 추정'으로
+    # 배터리 값"이고(미수신 스케줄러가 `battery_level < 20` → '배터리 방전 추정'으로
     # 분기할 때 읽는 값, services/scheduler.py), 지난 기록도 엄연히 수신한 heartbeat다. 저장을
     # 생략하면 그보다 **더 오래된** 값이 남아 계약이 더 어긋난다. "지금 배터리가 부족하다"고
     # 주장하는 Push를 생략하는 것과, 마지막으로 아는 값을 보관하는 것은 별개다.
     # ⚠️ 이 필드는 표시 전용이 아니라 스케줄러의 경고 등급 분기 입력이다 — 바꾸기 전에
     #    scheduler.py의 battery 분기를 함께 볼 것.
+    #
+    # ⚠️ **단, 값이 없는(null) heartbeat는 덮어쓰지 않는다**(`COALESCE`, 2026-10-10).
+    # null은 "0%"가 아니라 "모름"이다 — iOS 백필은 지금 배터리가 어제 값이 아니라서 일부러
+    # 싣지 않고, 기기가 배터리를 못 읽으면(iOS -1, Android 예외) 역시 빠진다. 예전에는
+    # 그대로 NULL로 덮어, 백필이 1초 전 정시 전송이 적어 둔 오늘 값을 지웠고(대시보드
+    # 배터리 표시 소실), 다음 날 미수신이면 스케줄러가 그 NULL을 0%로 읽어 '배터리 방전
+    # 추정 (0%)'만 보내고 주의→경고→긴급 사다리를 멈췄다.
     #
     # suspicious_count는 **당일 안부 확인일 때만 에스컬레이션 입력**으로 쓰고, 그 외에는
     # 활동을 증명할 때만 리셋한다. 아래에서 resolve_active_alerts로 활성 경고를 지우면서
@@ -263,7 +270,7 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
             """UPDATE devices SET
                 last_seen = $1,
                 steps_delta = $2,
-                battery_level = $3,
+                battery_level = COALESCE($3, battery_level),
                 suspicious_count = $4,
                 updated_at = $5
                WHERE user_id = $6 AND device_id = $7""",
@@ -278,13 +285,13 @@ async def process_heartbeat(db: asyncpg.Connection, user_id: int, payload: dict)
         # 지난 기록이 활동을 증명하지 못했다 — 카운터는 건드리지 않는다.
         # (회복 전송은 suspicious=false라 아래 else로 떨어져 카운터를 리셋한다.)
         await db.execute(
-            """UPDATE devices SET battery_level = $1, updated_at = $2
+            """UPDATE devices SET battery_level = COALESCE($1, battery_level), updated_at = $2
                WHERE user_id = $3 AND device_id = $4""",
             battery_level, now_dt, user_id, device_id,
         )
     else:
         await db.execute(
-            """UPDATE devices SET battery_level = $1, suspicious_count = 0, updated_at = $2
+            """UPDATE devices SET battery_level = COALESCE($1, battery_level), suspicious_count = 0, updated_at = $2
                WHERE user_id = $3 AND device_id = $4""",
             battery_level, now_dt, user_id, device_id,
         )

@@ -174,7 +174,7 @@ heartbeat 수신 → last_seen 갱신
   │   · heartbeat_logs INSERT **전**에 조회해야 정확 (INSERT 이후엔 항상 false)
   │   · auto_report/steps 알림 **중복 방지에만** 사용. heartbeat_logs INSERT는 매번 수행 (이력·차트용)
   ├─ 오늘(기기 로컬 타임존) 이미 heartbeat 수신한 경우 → suspicious 강제 false (하루 첫 heartbeat만 판정)
-  ├─ battery_level ≤ 10% + 기존 info 경고 없음 → 정보 등급 1회 발송 (DND 적용)
+  ├─ battery_level < 20% + 기존 info 경고 없음 → 정보 등급 1회 발송 (DND 적용)
   └─ suspicious 판정:
       ├─ false → 활성 경고 해소 (resolve_active_alerts → resolved_levels 반환)
       │   ├─ caution/warning/urgent 중 **하나라도** 해소 → 보호자 Push "정상 복귀" (정보 등급 DND 적용)
@@ -197,7 +197,8 @@ heartbeat 수신 → last_seen 갱신
 [heartbeat 미수신 시 (기기별 고정 시각 + 2시간 경과 시 체크)]
 지정 시각 + 2시간 내 미수신 대상자 감지 (기본: 18:00 → 20:00 체크)
   ├─ 보호자 구독 만료 → 알림 미발송 (heartbeat는 계속 수신)
-  ├─ battery_level ≤ 10% → 정보 등급 1회 발송 후 종료 (이후 상향 없음)
+  ├─ battery_level < 20% → 정보 등급 1회 발송 후 종료 (이후 상향 없음)
+  │   ※ battery_level이 NULL(모름)이면 이 분기를 건너뛰고 아래 미수신 판정으로 간다
   └─ 누적 미수신 횟수 기반 (기존 활성 경고 상태로 결정):
       ├─ 활성 경고 없음   → 1회 미수신 → 주의 등급
       ├─ caution 활성    → 2회 미수신 → 경고 등급
@@ -521,7 +522,7 @@ Response: 200 OK
 - `alert`: 활성 경고가 있으면 `{ "id": 10, "days_inactive": 2 }`, 없으면 `null`
 - `device_id`: 대상자 기기 고유 ID
 - `heartbeat_hour`, `heartbeat_minute`: 대상자의 heartbeat 예약 시각
-- `battery_level`: 마지막 heartbeat 시 배터리 잔량 (0~100, 없으면 `null`)
+- `battery_level`: 마지막으로 수신한 배터리 잔량 (0~100, 한 번도 받지 못했으면 `null`). 배터리 값을 싣지 않은 heartbeat는 이 값을 덮어쓰지 않는다(§4.6)
 - `weekly_steps`: 대상자 로컬 타임존 기준 최근 7일 일별 최대 걸음수 배열 (index 0 = 6일 전, 마지막 = 오늘). `users.created_at` 이전 날짜는 `null`(등록 전), 이후 heartbeat 없는 날은 `0`
 - 이름 없음 — 클라이언트가 로컬 별칭과 `invite_code`를 매칭하여 표시. **`guardians.alias`(§4.4.1)를 응답에 포함하지 않는 것은 의도**다 — 별칭의 원본은 클라 로컬이고 서버 사본은 Push 렌더링 전용이라, 응답에 내려주면 "어느 쪽이 원본인가"가 모호해진다. 재설치 시 별칭 복원 기능이 필요해지면 그때 별도 설계로 열 것
 
@@ -666,7 +667,9 @@ Response: 200 OK
 >
 > **운영 데이터로 실증됨(30일, 2026-09-09 측정)**: 마스킹 기록 19건 / 13일이며 **전부 그날 예약시각 이전에 도착했다(예외 0건)**. 우연이 아니라 구조다 — recovery는 `예약시각 −15분` 이전에만 발동하고 백필은 아침 큐 플러시로 나간다. iOS 3대는 그날 트리거가 실제로 미발사됐고, 안드로이드 1대는 09-02·09-03 **이틀 연속 미수신 경고가 소실**됐다(09-04에 09-03분이 백필로 도착 = 그날 정시 전송이 없었다는 증거).
 >
-> ⚠️ `steps_delta`도 같은 조건으로 묶인다 — recovery는 걸음수를 싣지 않으므로(null), 묶지 않으면 마지막으로 알던 값을 NULL로 덮는다. 반면 `battery_level`은 **어느 경우에도 갱신한다**(계약이 "마지막으로 수신한 heartbeat의 배터리"이고 미수신 스케줄러의 배터리 분기 입력이다).
+> ⚠️ `steps_delta`도 같은 조건으로 묶인다 — recovery는 걸음수를 싣지 않으므로(null), 묶지 않으면 마지막으로 알던 값을 NULL로 덮는다. 반면 `battery_level`은 **어느 경우에도 갱신한다**(계약이 "마지막으로 수신한 배터리 값"이고 미수신 스케줄러의 배터리 분기 입력이다).
+>
+> ⚠️ **단, 배터리 값이 없는(null) heartbeat는 덮어쓰지 않는다**(`COALESCE($n, battery_level)`, 2026-10-10). null은 "0%"가 아니라 "모름"이다 — iOS 백필은 지금 배터리가 어제 값이 아니라서 일부러 싣지 않고, 기기가 배터리를 읽지 못하면(iOS `-1`, Android 예외) 역시 빠진다. 예전에는 그대로 NULL로 덮어 ① 백필이 1초 전 정시 전송이 적어 둔 오늘 값을 지웠고(대시보드 배터리 표시 소실), ② 다음 날 미수신이면 스케줄러가 `battery_level or 0`으로 0%를 읽어 '배터리 방전 추정 (0%)'만 보내고 return해 **주의→경고→긴급 사다리가 매일 거기서 멈췄다**(정보 경고가 남아 있어 다음 날도 같은 분기). 스케줄러도 NULL을 "모름"으로 보고 배터리 분기를 건너뛴다(§6.1 4-a). 둘 중 하나만 고치면 다른 경로(G+S 해제 시 `battery_level = NULL` 초기화 등)로 다시 걸린다.
 >
 > 같은 규칙을 `POST /api/v1/devices/me/steps`가 이미 따르고 있다(§4.17.1) — "걸음수를 확인한 것"과 "오늘 안부가 확인된 것"은 다른 사실이다.
 >
@@ -689,7 +692,7 @@ Response: 200 OK
   - `is_first_today` 판정: 기기 로컬 타임존 자정 이후 수신 이력 — `heartbeat_logs` INSERT **전**에 조회해야 정확 (INSERT 이후엔 항상 false). `auto_report` / `steps` 알림 **중복 방지에만** 사용. heartbeat_logs INSERT는 매번 수행 (이력·차트용)
     - **legacy timezone alias 처리**: Android `flutter_timezone`이 반환하는 "US/Pacific", "Japan", "ROK", "PRC", "Brazil/East" 등 legacy IANA alias는 Railway PostgreSQL `pg_timezone_names`에 존재하지 않아 `AT TIME ZONE` 사용 시 `InvalidParameterValueError`로 크래시. `heartbeat_service.py`의 `is_first_today` 쿼리에 scheduler.py와 동일한 `pg_timezone_names LEFT JOIN COALESCE(..., 'Asia/Seoul')` CTE 패턴을 적용 — 미인식 alias는 Asia/Seoul로 폴백(날짜 경계가 UTC+9 기준으로 계산되나 크래시 없음).
     - ⚠️ **불변 규칙**: 사용자 제공 timezone 문자열을 SQL `AT TIME ZONE`에 직접 전달하는 패턴은 사용 금지. 반드시 `WITH safe AS (SELECT COALESCE(z.name, 'Asia/Seoul') AS tz FROM (SELECT $N::text AS inp) t LEFT JOIN pg_timezone_names z ON z.name = t.inp)` CTE를 앞에 두고 `safe.tz`를 참조하거나, Python-side에서 버킷팅하여 SQL `AT TIME ZONE` 자체를 제거해야 한다.
-  - `battery_level` ≤ 10% + 기존 info 경고 없으면 → 정보 등급 1회 발송 (중복 방지, DND 적용)
+  - `battery_level` < 20% + 기존 info 경고 없으면 → 정보 등급 1회 발송 (중복 방지, DND 적용)
   - `suspicious` = false → `resolve_active_alerts` 호출 후 반환된 `resolved_levels` 기준 분기:
     - caution / warning / urgent 중 **하나라도** 해소 → "정상 복귀" Push (auto_report 중복이라 스킵)
     - info(배터리)만 해소 또는 해소 없음:
@@ -1885,6 +1888,8 @@ Nms`, 기기별로는 `send_push`가 `subject_safety_net (토큰 앞 10자)`를 
 4. 등급 판정 (누적 미수신 횟수 기반):
    a. battery_level < 20%
       → 정보 등급 1회 발송 후 종료 (이후 상향 없음, 소리 없음)
+      → ⚠️ battery_level이 NULL이면 이 분기를 **건너뛴다** — 모름은 0%가 아니다. `or 0`으로 읽으면
+        실제로 안부가 끊긴 날 '배터리 방전 추정 (0%)'만 나가고 사다리가 멈춘다(§4.6, 2026-10-10 수정)
       → heartbeat 수신 시 자동 해소
 
    b. 활성 경고 없음 (1회 미수신)
